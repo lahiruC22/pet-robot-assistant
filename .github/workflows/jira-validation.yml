@@ -1,0 +1,62 @@
+name: Jira Validation
+'on':
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - edited
+jobs:
+  enforce-jira-linking:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate PR Title
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title}}"
+          REGEX="^WIZ-[0-9]+: .*"
+          if [[ ! "$PR_TITLE" =~ $REGEX ]]; then
+            echo "Error: PR title failed validation."
+            echo "Your PR title '$PR_TITLE' does not follow the required pattern."
+            echo "It must start with the Jira issue key, like 'WIZ-123: Your title here'."
+            exit 1
+          fi
+          echo "PR title is valid."
+      - name: Validate Branch Name
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          REGEX="(feature|fix|hotfix)\/WIZ-[0-9]+-.*"
+          if [[ ! "$BRANCH_NAME" =~ $REGEX ]]; then
+            echo "Branch Name Falied Validation."
+            echo "Your branch name '$BRANCH_NAME' does not follow the required pattern."
+            echo "It must look like: 'feature/WIZ-123-description'."
+            exit 1
+          fi
+          echo "Branch name is valid."
+      - name: Validate Commit Messages
+        run: >
+          REGEX="^WIZ-[0-9]+: .*"
+
+          COMMIT_MESSAGES=$(git log origin/${{ github.base_ref }}..HEAD
+          --pretty=format:%s)
+
+          echo "Checking commit messages..."
+
+          while IFS= read -r commit; do
+            if [[ "$commit" =~ ^Merge.* ]]; then
+              continue
+            fi
+            if [[ !"$commit" =~ $REGEX ]]; then
+              echo "Error: Commit message falied validation."
+              echo "Commit message '$commit' does not follow the required pattern."
+              echo "It must start with the Jira issue key, like 'WIZ-123: Your message here'."
+              exit 1
+            fi
+          done <<< "$COMMIT_MESSAGES"
+
+          echo "All commit messages are valid."
