@@ -32,7 +32,7 @@ jobs:
           BRANCH_NAME="${{ github.head_ref }}"
           REGEX="(feature|fix|hotfix)\/WIZ-[0-9]+-.*"
           if [[ ! "$BRANCH_NAME" =~ $REGEX ]]; then
-            echo "Branch Name Falied Validation."
+            echo "Branch Name Failed Validation."
             echo "Your branch name '$BRANCH_NAME' does not follow the required pattern."
             echo "It must look like: 'feature/WIZ-123-description'."
             exit 1
