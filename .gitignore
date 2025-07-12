@@ -1,0 +1,43 @@
+# ===================================================================
+# Top-Level .gitignore for the Assistant Robot Monorepo
+#
+# This file ignores files and folders common to any environment,
+# such as OS-specific files and general editor configurations.
+# ===================================================================
+
+# Operating System Files
+# These files are created by macOS, Windows, and Linux systems and have no place in a repository.
+.DS_Store
+Thumbs.db
+._*
+.Spotlight-V100
+.Trashes
+
+# General Editor/IDE Config
+# Ignore user-specific settings from popular editors.
+# Note: We do NOT ignore `.vscode/` here because `firmware/.vscode/` contains project-specific settings.
+# Instead, we ignore common user-specific files that might be generated inside it.
+.vscode/launch.json
+.vscode/tasks.json
+.vscode/settings.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Log files
+# Ignore any files with a .log extension.
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+# Ignore Python virtual environments and cache files.
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Node.js Dependencies
+# If any top-level scripts use Node.js, we should ignore the modules.
+node_modules/
