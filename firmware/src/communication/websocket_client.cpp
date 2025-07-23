@@ -74,7 +74,7 @@ void ElevenLabsClient::webSocketEvent(WStype_t type, uint8_t* payload, size_t le
 
             const char* msgType = doc["type"];
 
-            if (strcmp(msgType, "connection_opened")==0){
+            if (strcmp(msgType, "connection_opened") == 0){
                 this->connected = true;
                 Serial.println("[WSc] Authorization successful. Connection opened.");
                 if (connectionCallback) connectionCallback(true);
