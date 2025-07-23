@@ -1,18 +1,32 @@
 #include <Arduino.h>
+#include "config.h"
+#include "communication/wifi_manager.h"
 
-// put function declarations here:
-int myFunction(int, int);
+WiFiManager wifiManager;
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  Serial.begin(115200);
+
+  // Connect to Wi-Fi using credentials from config.h
+  // The Wokwi guest network doesn't require a password.
+  if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)){
+    Serial.println("Failed to connect to Wi-Fi.");
+
+    // Handle connection failure
+    while(true) {
+      delay(1000);
+    }
+  }
+
+  // -- All other setup code follows here --
+  Serial.println("Wi-Fi connected successfully!");
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  // Periodically check Wi-Fi connection status
+  if (!wifiManager.isConnected()){
+    Serial.println("Wi-Fi disconnected, attempting to reconnect...");
+    wifiManager.connect(WIFI_SSID, WIFI_PASSWORD);
+  }
+  delay(1000); // Delay to avoid flooding the serial output
 }
