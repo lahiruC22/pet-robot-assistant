@@ -1,110 +1,146 @@
+#include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WebSocketsClient.h>
-#include <base64.h> // For encoding the audio data
+#include <ArduinoJson.h>
+#include <time.h>
 
-/************************* CONFIGURATION *********************************/
-
-// --- Wi-Fi Credentials ---
-#define WLAN_SSID "KS-device"
-#define WLAN_PASS "qwerty999"
-
-// --- WebSocket STT API Example Values (REPLACE WITH YOUR ACTUAL API) ---
-const char* WS_HOST = "api.elevenlabs.io"; // The server HOSTNAME (no "ws://")
-const int   WS_PORT = 80;                  // The server port
-const char* WS_PATH = "/v1/convai/conversation?agent_id=agent_01jzbynanrem99xpncv8ef0m8y"; // The endpoint path
-const char* API_KEY = "YOUR_SUPER_SECRET_API_KEY"; // An API key, if needed for headers
-
-const char* PREDEFINED_BASE64_STRING = "SGVsbG8gV2ViU29ja2V0IQ=="; // "Hello WebSocket!"
-
-/************************* GLOBAL OBJECTS *********************************/
-
+WiFiMulti wifiMulti;
 WebSocketsClient webSocket;
 
-String responseBase64 = "";
+#define USE_SERIAL Serial
 
-/*************************** FUNCTION PROTOTYPES **************************/
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
+// Replace these with your credentials
+const char* ssid = "KS-device";
+const char* password = "qwerty999";
 
-/*************************** SETUP ****************************************/
+String api = "sk_74e2633e42a5669fadb531d0766dce352c5f267ef918fb4f";
+String agent_id = "agent_01k0nta4ekfj4868162kx0g5x5";
 
-void setup() {
-  Serial.begin(115200);
-  delay(10);
-
-  // Connect to WiFi
-  Serial.print("Connecting to ");
-  Serial.println(WLAN_SSID);
-  WiFi.begin(WLAN_SSID, WLAN_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
+// Setup NTP for TLS certificate validation
+void setClock() {
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  USE_SERIAL.print(F("Waiting for NTP time sync: "));
+  time_t nowSecs = time(nullptr);
+  while (nowSecs < 8 * 3600 * 2) {
     delay(500);
-    Serial.print(".");
+    USE_SERIAL.print(F("."));
+    yield();
+    nowSecs = time(nullptr);
   }
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
 
-  // Configure WebSocket client
-  webSocket.begin(WS_HOST, WS_PORT, WS_PATH);
-  
-  // // Set an authorization header (many APIs use this)
-  // // Format: "HeaderName: HeaderValue"
-  // webSocket.setExtraHeaders(("Authorization: Bearer " + String(API_KEY)).c_str());
-
-  // Register the event handler function
-  webSocket.onEvent(webSocketEvent);
-
-  // Set a reconnect interval in case of disconnection
-  webSocket.setReconnectInterval(5000); // try to reconnect every 5s
+  USE_SERIAL.println();
+  struct tm timeinfo;
+  gmtime_r(&nowSecs, &timeinfo);
+  USE_SERIAL.print(F("Current time: "));
+  USE_SERIAL.print(asctime(&timeinfo));
 }
 
-/*************************** LOOP *****************************************/
+String userInput = "Hi how are you?";
+String jsonPayload = "{\"type\":\"user_message\",\"text\":\"" + userInput + "\"}";
 
-void loop() {
-  // The magic happens here. This function handles all WebSocket communication,
-  // including pings, disconnects, and calling our event handler.
-  webSocket.loop();
-}
-
-//==============================================================
-// --- WEBSOCKET EVENT HANDLER (MODIFIED) ---
-//==============================================================
-
-/**
- * @brief Handles incoming WebSocket events.
- */
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+// WebSocket Event Handler
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
-      Serial.println("[WebSocket] Disconnected!");
+      USE_SERIAL.printf("[WSc] Disconnected!\n");
       break;
 
     case WStype_CONNECTED:
-      Serial.printf("[WebSocket] Connected to server: %s\n", payload);
-      
-      // --- SEND THE PREDEFINED STRING UPON CONNECTION ---
-      Serial.printf("--> Sending Base64 string: %s\n", PREDEFINED_BASE64_STRING);
-      webSocket.sendTXT(PREDEFINED_BASE64_STRING);
+      USE_SERIAL.printf("[WSc] Connected to ElevenLabs WebSocket\n");
+      webSocket.sendTXT(jsonPayload);
+      USE_SERIAL.println("[SEND] " + userInput);
       break;
 
     case WStype_TEXT:
-      // --- THIS IS THE MODIFIED SECTION ---
-      Serial.printf("<-- Received text: %s\n", payload);
+    {
+      USE_SERIAL.printf("[WSc] Raw Response: %s\n", payload);
 
-      // Store the received payload into our global variable.
-      // We cast the uint8_t* payload to a char* so the String object can use it.
-      responseBase64 = (char*)payload;
+      // Parse the JSON reply
+      StaticJsonDocument<1024> doc;
+      DeserializationError error = deserializeJson(doc, payload);
 
-      // Print the content of the variable to confirm it was stored correctly.
-      Serial.println("  > Returned response: ");
-      Serial.println(responseBase64);
-      Serial.println("------------------------------------");
+      if (error) {
+        USE_SERIAL.print(F("[WSc] Failed to parse JSON: "));
+        USE_SERIAL.println(error.f_str());
+        break;
+      }
+
+      const char* type = doc["type"];
+      const char* text = doc["text"];
+
+      if (type && strcmp(type, "reply") == 0 && text) {
+        USE_SERIAL.println("\n========== AI REPLY ==========");
+        USE_SERIAL.println(text);
+        USE_SERIAL.println("================================\n");
+      } else {
+        USE_SERIAL.println("[WSc] Non-reply message received:");
+        serializeJsonPretty(doc, Serial);
+        Serial.println();
+      }
+
       break;
+    }
 
     case WStype_BIN:
-      Serial.printf("<-- Received binary data of length: %u\n", length);
+      USE_SERIAL.printf("[WSc] Received binary data (%d bytes)\n", length);
       break;
-      
+
+    case WStype_ERROR:
+      USE_SERIAL.println("[WSc] Error");
+      break;
+
     default:
       break;
   }
+}
+
+void setup() {
+  USE_SERIAL.begin(115200);
+  USE_SERIAL.println();
+  USE_SERIAL.print("esp_arduino version: ");
+  USE_SERIAL.println(ESP_ARDUINO_VERSION);
+  USE_SERIAL.setDebugOutput(false);
+
+  USE_SERIAL.println("\n[SETUP] Connecting to WiFi...");
+  wifiMulti.addAP(ssid, password);
+  while (wifiMulti.run() != WL_CONNECTED) {
+    delay(100);
+  }
+
+  USE_SERIAL.println("[SETUP] WiFi connected.");
+  delay(200);
+  setClock();
+  USE_SERIAL.println("=============== Clock Setup Completed ===============");
+
+  // Prepare Authorization Header
+  String headers = "Authorization: Bearer " + api + "\r\n";
+  webSocket.setExtraHeaders(headers.c_str());
+  USE_SERIAL.println("[SETUP] API key sent");
+
+  // Connect to ElevenLabs WebSocket
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 4)
+  webSocket.beginSslWithBundle(
+    "api.elevenlabs.io",
+    443,
+    ("/v1/convai/conversation?agent_id=" + agent_id).c_str(),
+    NULL, 0, ""
+  );
+#else
+  webSocket.beginSslWithBundle(
+    "api.elevenlabs.io",
+    443,
+    ("/v1/convai/conversation?agent_id=" + agent_id).c_str(),
+    NULL, ""
+  );
+#endif
+
+  webSocket.onEvent(webSocketEvent);
+  webSocket.setReconnectInterval(5000);
+
+  USE_SERIAL.println("[SETUP] Ready. Type your message below:");
+}
+
+void loop() {
+  webSocket.loop();
 }
