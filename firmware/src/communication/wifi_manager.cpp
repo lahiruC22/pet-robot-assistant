@@ -6,7 +6,7 @@ bool WiFiManager::connect(const char* ssid, const char* password, unsigned long 
     Serial.println(ssid);
 
     // For WokWi, the channel (6) is sometimes needed.
-    // For physica; hardware, this is usually not required.
+    // For physical hardware, this is usually not required.
     WiFi.begin(ssid, password, 6);
 
     unsigned long startTime = millis();
@@ -21,7 +21,7 @@ bool WiFiManager::connect(const char* ssid, const char* password, unsigned long 
         Serial.print(".");
     }
 
-    Serial1.println(" Connected!");
+    Serial.println(" Connected!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
 

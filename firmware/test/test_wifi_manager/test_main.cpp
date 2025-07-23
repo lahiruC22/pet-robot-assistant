@@ -16,7 +16,7 @@ void tearDown(void) {
 void test_wifi_connect_success() {
     bool connected = wifiManager.connect("Wokwi-GUEST", "", 15000);
     TEST_ASSERT_TRUE_MESSAGE(connected, "Failed to connect with valid credentials");
-    TEST_ASSERT_TRUE_MESSAGE(wifiManager.isConnected(),"isConnected returned false after successfull connection");
+    TEST_ASSERT_TRUE_MESSAGE(wifiManager.isConnected(),"isConnected returned false after successful connection");
 }
 
 void test_wifi_connect_failure_bad_credentials(void) {
