@@ -11,11 +11,11 @@ WebSocketsClient webSocket;
 #define USE_SERIAL Serial
 
 // Replace these with your credentials
-const char* ssid = "KS-device";
-const char* password = "qwerty999";
+const char* ssid = "wifi-ssid-is-here";
+const char* password = "wifi-password-is-here";
 
-String api = "sk_74e2633e42a5669fadb531d0766dce352c5f267ef918fb4f";
-String agent_id = "agent_01k0nta4ekfj4868162kx0g5x5";
+String api = "api-key-is-here";
+String agent_id = "agent-id-is-here";
 
 // Setup NTP for TLS certificate validation
 void setClock() {
