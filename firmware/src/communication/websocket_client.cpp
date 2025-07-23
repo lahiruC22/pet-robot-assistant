@@ -87,7 +87,7 @@ void ElevenLabsClient::webSocketEvent(WStype_t type, uint8_t* payload, size_t le
         break;
 
         case WStype_BIN:
-            Serial.printf("[WSc] Recevied binary data (%d bytes)\n", length);
+            Serial.printf("[WSc] Received binary data (%d bytes)\n", length);
             if (audioDataCallback) {
                 audioDataCallback(payload, length);
             }
