@@ -5,38 +5,43 @@
 #include <functional>
 #include <WebSocketsClient.h>
 
-// Callback function types for handling server events
+using MessageCallback = std::function<void(const char* type, const char* text)>;
 using AudioDataCallback = std::function<void(const uint8_t*data, size_t length)>;
-using TranscriptCallback = std::function<void(const char* transcript)>;
+using ConnectionCallback = std::function<void(bool connected)>;
 
 class ElevenLabsClient {
+    
 public:
+
     ElevenLabsClient();
-
-    void begin();
-
+    void begin(const char* agent_id, const char* api_key);
     void loop();
 
-    void sendAudio(const uint8_t* data, size_t length);
+    // Drop this in initial connection test phase
+    //void sendAudio(const uint8_t* data, size_t length);
 
     void sendText(const char* text);
 
     bool isConnected();
 
-    // -- Callbacks Registration --
+    void onMessage(MessageCallback callback);
     void onAudioData(AudioDataCallback callback);
-    void onTranscript(TranscriptCallback callback);
+    void onConnection(ConnectionCallback callback);
 
 private:
-    friend void webSocketEventRouter(WStype_t type, uint8_t* payload, size_t length);
 
-    void handleWebSocketMessage(uint8_t* payload, size_t length);
+    WebSocketsClient WebSocket;
+    String agentId;
+    String apikey;
+    bool connected = false;
 
-    void sendInitialConnectionMessage();
+    MessageCallback messageCallback = nullptr;
+    AudioDataCallback audioDataCallback = nullptr;
+    ConnectionCallback connectionCallback = nullptr;
 
-    // Callbacks
-    AudioDataCallback audioCallback = nullptr;
-    TranscriptCallback transcriptCallback = nullptr;
+    void webSocketEvent(WStype_t type, uint8_t* payload, size_t length);
+    static void webSocketEventRouter(WStype_t type, uint8_t* payload, size_t length);
+
 };
 
 #endif
