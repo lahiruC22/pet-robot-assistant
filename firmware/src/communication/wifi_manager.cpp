@@ -5,9 +5,16 @@ bool WiFiManager::connect(const char* ssid, const char* password, unsigned long 
     Serial.print("Connecting to WiFi SSID: ");
     Serial.println(ssid);
 
+    // Disconnect any existing connection
+    WiFi.disconnect(true);
+    delay(1000);
+    
+    // Configure WiFi mode
+    WiFi.mode(WIFI_STA);
+    
     // For WokWi, the channel (6) is sometimes needed.
     // For physical hardware, this is usually not required.
-    WiFi.begin(ssid, password, 6);
+    WiFi.begin(ssid, password);
 
     unsigned long startTime = millis();
     while (WiFi.status() != WL_CONNECTED) {
@@ -17,13 +24,16 @@ bool WiFiManager::connect(const char* ssid, const char* password, unsigned long 
             WiFi.disconnect();
             return false;
         }
-        delay(100);
+        delay(250);
         Serial.print(".");
     }
 
     Serial.println(" Connected!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
 
     return true;
 }
