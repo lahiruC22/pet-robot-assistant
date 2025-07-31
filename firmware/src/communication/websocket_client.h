@@ -18,6 +18,7 @@ using VadScoreCallback = std::function<void(float vad_score)>;
 using PingCallback = std::function<void(uint32_t event_id, uint32_t ping_ms)>;
 
 class ElevenLabsClient {
+    
 public:
     ElevenLabsClient();
     ~ElevenLabsClient();

@@ -19,7 +19,9 @@ class WiFiManager {
         * @param timeout_ms The maximum time to wait for a connection, in milliseconds.
         * @return true if the connection was successful, false otherwise.
         */
+       //this is for wowki
         bool connect(const char* ssid, const char* password, unsigned long timeout_ms = 10000);
+        // bool connect(const char* ssid, const char* password);
 
         /**
         * @brief Checks if the device is currently connected to Wi-Fi.

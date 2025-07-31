@@ -1,7 +1,7 @@
 #include "wifi_manager.h"
 #include <Arduino.h>
 
-bool WiFiManager::connect(const char* ssid, const char* password, unsigned long timeout_ms){
+bool WiFiManager::connect(const char* ssid, const char* password, unsigned long timeout_ms) {
     Serial.print("Connecting to WiFi SSID: ");
     Serial.println(ssid);
 
