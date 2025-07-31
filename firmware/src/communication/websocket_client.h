@@ -7,11 +7,6 @@
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 
-<<<<<<< HEAD
-using MessageCallback = std::function<void(const char* type, const char* text)>;
-using AudioChunkCallback = std::function<void(const char* base64Audio, int eventId, bool isComplete)>;
-using ConnectionCallback = std::function<void(bool connected)>;
-=======
 // Callback function types for handling server events
 using AudioDataCallback = std::function<void(const uint8_t* data, size_t length, uint32_t event_id)>;
 using TranscriptCallback = std::function<void(const char* transcript)>;
@@ -21,62 +16,12 @@ using ToolCallCallback = std::function<void(const char* tool_name, const char* t
 using ErrorCallback = std::function<void(const char* error_message)>;
 using VadScoreCallback = std::function<void(float vad_score)>;
 using PingCallback = std::function<void(uint32_t event_id, uint32_t ping_ms)>;
->>>>>>> upstream/feature/WIZ-53-websocket-connection
 
 class ElevenLabsClient {
     
 public:
 
     ElevenLabsClient();
-<<<<<<< HEAD
-    void begin(const char* agent_id);
-    void loop();
-
-    // Drop this in initial connection test phase
-    //void sendAudio(const uint8_t* data, size_t length);
-
-    void sendText(const char* text);
-    void sendUserActivity();
-    void sendContextualUpdate(const char* context);
-
-    bool isConnected();
-    void disconnect();
-    void getConnectionInfo();
-
-    void onMessage(MessageCallback callback);
-    void onAudioChunk(AudioChunkCallback callback);
-    void onConnection(ConnectionCallback callback);
-
-    // Audio chunk collection methods
-    void clearAudioBuffer();
-    String getCompleteAudioBase64();
-    int getAudioChunkCount();
-
-private:
-
-    WebSocketsClient WebSocket;
-    String agentId;
-    
-    bool connected = false;
-    bool conversationInitiated = false;
-    unsigned long connectionTime = 0;
-    int messagesSent = 0;
-    int messagesReceived = 0;
-
-    // Audio chunk collection
-    String audioBuffer;
-    int audioChunkCount = 0;
-    int lastAudioEventId = -1;
-    bool audioStreamActive = false;
-
-    MessageCallback messageCallback = nullptr;
-    AudioChunkCallback audioChunkCallback = nullptr;
-    ConnectionCallback connectionCallback = nullptr;
-
-    void webSocketEvent(WStype_t type, uint8_t* payload, size_t length);
-    static void webSocketEventRouter(WStype_t type, uint8_t* payload, size_t length);
-
-=======
     ~ElevenLabsClient();
 
     // Connection management
@@ -87,7 +32,7 @@ private:
     void reconnect();
 
     // Message sending methods
-    void sendAudio(const uint8_t* data, size_t length);
+    void sendAudio(const char* base64AudioData);
     void sendText(const char* text);
     void sendUserActivity();
     void sendContextualUpdate(const char* text);
@@ -141,7 +86,6 @@ private:
     void handleDisconnection();
     void resetReconnectionState();
     unsigned long getReconnectDelay();
->>>>>>> upstream/feature/WIZ-53-websocket-connection
 };
 
 #endif

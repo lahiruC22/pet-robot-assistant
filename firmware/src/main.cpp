@@ -1,280 +1,244 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include "config.h"
 #include "communication/wifi_manager.h"
 #include "communication/websocket_client.h"
-<<<<<<< HEAD
-#include <time.h>
+#include "audio/microphone.h"
 
+// Global instances
 WiFiManager wifiManager;
 ElevenLabsClient elevenLabsClient;
+Microphone microphone;
 
-// Setup NTP for TLS certificate validation (required for SSL)
-void setClock() {
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  Serial.print("Waiting for NTP time sync...");
-  struct tm timeinfo;
-  while (!getLocalTime(&timeinfo) || timeinfo.tm_year < (2023 - 1900)) {
-    Serial.print(".");
-    delay(500);
-  }
-  Serial.println(" done.");
-  Serial.print(asctime(&timeinfo));
-=======
-
-WiFiManager wifiManager;
-ElevenLabsClient elevenLabs;
-
-// Example callback functions
-void onConversationInit(const char* conversation_id) {
-    Serial.println("Conversation initialized with ID: " + String(conversation_id));
-}
-
-void onAgentResponse(const char* response) {
-    Serial.println("Agent says: " + String(response));
-    // You can handle the text response here (e.g., display on screen, process commands)
-}
-
-void onTranscript(const char* transcript) {
-    Serial.println("User said: " + String(transcript));
-}
-
-void onAudioData(const uint8_t* data, size_t length, uint32_t event_id) {
-    Serial.printf("Received audio chunk: %u bytes (event_id: %u)\n", length, event_id);
-    // Since we're overriding audio, you can process this audio data here
-    // For example, play it through your speaker system
-}
-
-void onToolCall(const char* tool_name, const char* tool_call_id, const JsonDocument& parameters) {
-    Serial.println("Tool call requested: " + String(tool_name) + " (ID: " + String(tool_call_id) + ")");
-    
-    // Example tool handling - you should implement actual tool logic here
-    String result = "Tool executed successfully";
-    elevenLabs.sendToolResult(tool_call_id, result.c_str(), false);
-}
-
-void onError(const char* error_message) {
-    Serial.println("ElevenLabs Error: " + String(error_message));
-    
-    // If we get a connection error, try to restart the connection
-    if (String(error_message).indexOf("connection") != -1 || 
-        String(error_message).indexOf("disconnect") != -1) {
-        Serial.println("Connection error detected, will attempt reconnection...");
-    }
-}
-
-void onVadScore(float vad_score) {
-    // Voice Activity Detection score - useful for detecting when user is speaking
-    if (vad_score > 0.5) {
-        Serial.printf("Voice detected (VAD: %.2f)\n", vad_score);
-    }
-}
-
-void onPing(uint32_t event_id, uint32_t ping_ms) {
-    Serial.printf("Ping received: %u ms (event_id: %u)\n", ping_ms, event_id);
->>>>>>> upstream/feature/WIZ-53-websocket-connection
-}
+// State management
+bool isWaitingForRecord = false;
+bool isCountingDown = false;
+bool isRecording = false;
+bool isWaitingForResponse = false;
+unsigned long countdownStart = 0;
+unsigned long recordingStart = 0;
+int countdownSeconds = 5;
+int recordingSeconds = 3;
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("Starting Pet Robot Assistant...");
-
-    // Connect to Wi-Fi using credentials from config.h
-    if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)) {
-        Serial.println("Failed to connect to Wi-Fi.");
-        while(true) {
-            delay(1000);
-        }
-    }
-
-<<<<<<< HEAD
-  // -- All other setup code follows here --
-  Serial.println("Wi-Fi connected successfully!");
-
-  // Set up NTP for time synchronization
-  setClock();
-  Serial.println("Clock setup Completed");
-
-  // Initialize ElevenLabs client
-  elevenLabsClient.onConnection([](bool connected) {
-    if (connected){
-      Serial.println("[MAIN] ✅ WebSocket Connected! Conversation initiated.");
-      Serial.println("🎵 Waiting for agent's initial response and audio chunks...");
-    } else {
-      Serial.println("[MAIN] ❌ WebSocket Disconnected!");
-    }
-  }); // Close lambda and onConnection call
-
-  elevenLabsClient.onMessage([](const char* type, const char* text){
-    if (strcmp(type, "agent_response") == 0) {
-      Serial.println("\n" + String("=").substring(0, 50));
-      Serial.println("🤖 AI AGENT RESPONSE:");
-      Serial.println(text);
-      Serial.println(String("=").substring(0, 50) + "\n");
-    } else if (strcmp(type, "user_transcript") == 0) {
-      Serial.println("\n" + String("-").substring(0, 30));
-      Serial.println("👤 USER TRANSCRIPT:");
-      Serial.println(text);
-      Serial.println(String("-").substring(0, 30) + "\n");
-    } else if (strcmp(type, "error") == 0) {
-      Serial.println("\n❌ ERROR MESSAGE:");
-      Serial.println(text);
-      Serial.println();
-    } else {
-      Serial.printf("[MAIN] 📨 Received message type '%s': %s\n", type, text);
-    }
-  });
-
-  // Register audio chunk callback to handle base64 audio chunks
-  elevenLabsClient.onAudioChunk([](const char* base64Audio, int eventId, bool isComplete) {
-    Serial.printf("[MAIN] 🎵 Audio chunk received - Event ID: %d, Length: %d, Complete: %s\n", 
-                eventId, strlen(base64Audio), isComplete ? "Yes" : "No");
+    delay(1000);
     
-    if (isComplete) {
-      Serial.println("\n🎉 COMPLETE AUDIO STREAM RECEIVED!");
-      String completeAudio = elevenLabsClient.getCompleteAudioBase64();
-      int totalChunks = elevenLabsClient.getAudioChunkCount();
-      
-      Serial.printf("📊 Total chunks: %d\n", totalChunks);
-      Serial.printf("📏 Total audio length: %d characters\n", completeAudio.length());
-      Serial.printf("💾 Estimated decoded size: %d bytes\n", (completeAudio.length() * 3) / 4);
-      
-      Serial.println("\n" + String("█").substring(0, 60));
-      Serial.println("🎵 COMPLETE BASE64 AUDIO DATA:");
-      Serial.println(completeAudio);
-      Serial.println(String("█").substring(0, 60) + "\n");
-      
-      // Clear buffer for next audio stream
-      elevenLabsClient.clearAudioBuffer();
+    Serial.println("\n=== Pet Robot Assistant Starting ===");
+    
+    // Initialize WiFi
+    Serial.println("Initializing WiFi...");
+    wifiManager.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    if (!wifiManager.isConnected()) {
+        Serial.println("Failed to connect to WiFi. Restarting...");
+        ESP.restart();
     }
-  });
-
-  // Start the WebSocket client
-  elevenLabsClient.begin(ELEVEN_LABS_AGENT_ID);
-
-  Serial.println("[SETUP] Ready.");
-
-} // Close setup()
-
-void loop() {
-  // Periodically check Wi-Fi connection status
-  if (!wifiManager.isConnected()){
-    Serial.println("[MAIN] 📶 Wi-Fi disconnected, attempting to reconnect...");
-    wifiManager.connect(WIFI_SSID, WIFI_PASSWORD);
-  }
-
-  elevenLabsClient.loop();
-
-  // Debug connection status every 10 seconds
-  static unsigned long lastDebugTime = 0;
-  if (millis() - lastDebugTime > 10000) {
-    Serial.println("\n[DEBUG] Connection Status:");
-    elevenLabsClient.getConnectionInfo();
-    lastDebugTime = millis();
-  }
-
-  // Send conversation messages every 30 seconds if connected
-  static unsigned long lastMessageTime = 0;
-  static int messageCount = 0;
-  
-  if (elevenLabsClient.isConnected() && millis() - lastMessageTime > 30000) {
-    const char* messages[] = {
-      "What's your favorite activity?",
-      "Can you tell me about yourself?",
-      "What can you help me with?",
-      "How are you feeling today?",
-      "Tell me something interesting.",
-      "What do you think about technology?"
-    };
     
-    int messageIndex = messageCount % (sizeof(messages) / sizeof(messages[0]));
+    Serial.println("WiFi connected successfully!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
     
-    Serial.printf("\n[MAIN] 📤 Sending message #%d: %s\n", messageCount + 1, messages[messageIndex]);
-    elevenLabsClient.sendText(messages[messageIndex]);
+    // Initialize microphone
+    Serial.println("Initializing microphone...");
+    if (!microphone.begin(MIC_SAMPLE_RATE)) {
+        Serial.println("Failed to initialize microphone!");
+        return;
+    }
+    Serial.println("Microphone initialized successfully!");
     
-    lastMessageTime = millis();
-    messageCount++;
-  }
-
-  // Send user activity every 15 seconds to keep connection alive
-  static unsigned long lastActivityTime = 0;
-  if (elevenLabsClient.isConnected() && millis() - lastActivityTime > 15000) {
-    Serial.println("[MAIN] 💭 Sending user activity to keep connection alive");
-    elevenLabsClient.sendUserActivity();
-    lastActivityTime = millis();
-  }
-  
-  delay(100); // Small delay to prevent flooding
-=======
-    Serial.println("Wi-Fi connected successfully!");
-
-    // Configure ElevenLabs client
-    elevenLabs.setOverrideAudio(true); // Override default audio to handle it ourselves
-
-    // Register callbacks
-    elevenLabs.onConversationInit(onConversationInit);
-    elevenLabs.onAgentResponse(onAgentResponse);
-    elevenLabs.onTranscript(onTranscript);
-    elevenLabs.onAudioData(onAudioData);
-    elevenLabs.onToolCall(onToolCall);
-    elevenLabs.onError(onError);
-    elevenLabs.onVadScore(onVadScore);
-    elevenLabs.onPing(onPing);
-
-    // Start ElevenLabs WebSocket connection
-    elevenLabs.begin(ELEVEN_LABS_AGENT_ID);
-
-    Serial.println("Setup complete!");
+    Serial.println("\n=== Ready for Commands ===");
+    Serial.println("Type 'r' and press Enter to start recording sequence");
+    Serial.println("=======================================\n");
 }
 
 void loop() {
-    // Periodically check Wi-Fi connection status
-    if (!wifiManager.isConnected()) {
-        Serial.println("Wi-Fi disconnected, attempting to reconnect...");
-        if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)) {
-            Serial.println("Wi-Fi reconnection failed, retrying in 5 seconds...");
-            delay(5000);
-            return;
-        }
-        Serial.println("Wi-Fi reconnected successfully!");
+    // Handle WiFi connection
+    wifiManager.loop();
+    
+    // Handle WebSocket connection (only when needed)
+    if (elevenLabsClient.isConnected()) {
+        elevenLabsClient.loop();
     }
-
-    // Process WebSocket events
-    elevenLabs.loop();
-
-    // Handle serial input for interactive messaging
-    if (Serial.available()) {
-        String userInput = Serial.readStringUntil('\n');
-        userInput.trim();
+    
+    // Handle microphone
+    microphone.loop();
+    
+    // Handle serial input for 'r' command
+    if (Serial.available() && !isWaitingForRecord && !isCountingDown && !isRecording) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
         
-        if (userInput.length() > 0) {
-            if (elevenLabs.isConnected()) {
-                Serial.println("You: " + userInput);
-                elevenLabs.sendText(userInput.c_str());
-            } else {
-                Serial.println("Not connected to ElevenLabs. Please wait for connection...");
-            }
+        if (input.equals("r") || input.equals("R")) {
+            startRecordingSequence();
         }
     }
-
-    // Send test message and provide status updates
-    static unsigned long lastTest = 0;
-    static unsigned long lastStatusUpdate = 0;
-    static bool testSent = false;
     
-    // Status update every 30 seconds
-    if (millis() - lastStatusUpdate > 30000) {
-        Serial.printf("Status - WiFi: %s, WebSocket: %s\n", 
-                     wifiManager.isConnected() ? "Connected" : "Disconnected",
-                     elevenLabs.isConnected() ? "Connected" : "Disconnected");
-        lastStatusUpdate = millis();
+    // Handle countdown
+    if (isCountingDown) {
+        handleCountdown();
     }
     
-    if (!testSent && millis() - lastTest > 10000 && elevenLabs.isConnected()) {
-        elevenLabs.sendText("Hello, can you hear me?");
-        testSent = true;
-        Serial.println("Test message sent! You can now type messages in the serial monitor.");
+    // Handle recording completion
+    if (isRecording && microphone.isRecordingComplete()) {
+        handleRecordingComplete();
     }
+    
+    delay(10);
+}
 
-    delay(10); // Small delay to prevent watchdog issues
->>>>>>> upstream/feature/WIZ-53-websocket-connection
+void startRecordingSequence() {
+    Serial.println("\n=== Starting Recording Sequence ===");
+    Serial.println("Preparing for 5-second countdown...");
+    
+    isWaitingForRecord = true;
+    isCountingDown = true;
+    countdownStart = millis();
+    countdownSeconds = 5;
+    
+    Serial.printf("Countdown: %d seconds remaining\n", countdownSeconds);
+}
+
+void handleCountdown() {
+    unsigned long elapsed = millis() - countdownStart;
+    
+    if (elapsed >= 1000) { // Every second
+        countdownSeconds--;
+        countdownStart = millis();
+        
+        if (countdownSeconds > 0) {
+            Serial.printf("Countdown: %d seconds remaining\n", countdownSeconds);
+        } else {
+            // Start recording
+            Serial.println("\n🎤 Starting 3-second recording NOW!");
+            startRecording();
+        }
+    }
+}
+
+void startRecording() {
+    isCountingDown = false;
+    isRecording = true;
+    recordingStart = millis();
+    
+    // Start 3-second recording
+    if (microphone.startRecording(3)) {
+        Serial.println("Recording started successfully!");
+    } else {
+        Serial.println("Failed to start recording!");
+        resetState();
+    }
+}
+
+void handleRecordingComplete() {
+    Serial.println("🎉 Recording complete!");
+    isRecording = false;
+    
+    // Get base64 encoded audio
+    String audioBase64 = microphone.getBase64AudioData();
+    
+    if (audioBase64.length() > 0) {
+        Serial.printf("Audio recorded: %d characters base64 data\n", audioBase64.length());
+        
+        // Connect to WebSocket and send audio
+        connectAndSendAudio(audioBase64);
+    } else {
+        Serial.println("Error: No audio data recorded!");
+        resetState();
+    }
+    
+    // Clear microphone buffer for next recording
+    microphone.clearBuffer();
+}
+
+void connectAndSendAudio(String audioBase64) {
+    Serial.println("\n=== Connecting to ElevenLabs WebSocket ===");
+    
+    // Set up callbacks for WebSocket events
+    elevenLabsClient.onConversationInit([](const char* conversation_id) {
+        Serial.printf("✅ Conversation initialized: %s\n", conversation_id);
+        isWaitingForResponse = true;
+    });
+    
+    elevenLabsClient.onAgentResponse([](const char* response) {
+        Serial.println("\n" + String("=").substring(0, 50));
+        Serial.println("🤖 AI AGENT RESPONSE:");
+        Serial.println(response);
+        Serial.println(String("=").substring(0, 50) + "\n");
+    });
+    
+    elevenLabsClient.onAudioData([](const uint8_t* data, size_t length, uint32_t event_id) {
+        // This callback is triggered when audio data is received
+        Serial.printf("📻 Received audio chunk: event_id=%u, length=%u\n", event_id, length);
+    });
+    
+    elevenLabsClient.onError([](const char* error_message) {
+        Serial.printf("❌ WebSocket Error: %s\n", error_message);
+    });
+    
+    // Initialize WebSocket connection
+    elevenLabsClient.begin(ELEVEN_LABS_AGENT_ID);
+    
+    // Wait for connection and initialization
+    Serial.println("Waiting for WebSocket connection and initialization...");
+    
+    unsigned long connectionStart = millis();
+    bool connectionEstablished = false;
+    bool conversationInitialized = false;
+    
+    // Wait up to 15 seconds for connection and initialization
+    while (millis() - connectionStart < 15000) {
+        elevenLabsClient.loop();
+        
+        if (!connectionEstablished && elevenLabsClient.isConnected()) {
+            Serial.println("✅ WebSocket connected!");
+            connectionEstablished = true;
+        }
+        
+        if (connectionEstablished && isWaitingForResponse) {
+            Serial.println("✅ Conversation initialized!");
+            conversationInitialized = true;
+            break;
+        }
+        
+        delay(100);
+    }
+    
+    if (!conversationInitialized) {
+        Serial.println("❌ Failed to establish connection or initialize conversation!");
+        elevenLabsClient.disconnect();
+        resetState();
+        return;
+    }
+    
+    // Send the audio data
+    Serial.println("\n=== Sending Audio Data ===");
+    Serial.printf("Sending %d characters of base64 audio data...\n", audioBase64.length());
+    
+    elevenLabsClient.sendAudio(audioBase64.c_str());
+    
+    // Listen for responses
+    Serial.println("\n=== Listening for Responses ===");
+    Serial.println("Waiting for agent response and audio...");
+    
+    // Listen for 30 seconds for responses
+    unsigned long listenStart = millis();
+    while (millis() - listenStart < 30000) {
+        elevenLabsClient.loop();
+        delay(50);
+    }
+    
+    Serial.println("\n=== Session Complete ===");
+    elevenLabsClient.disconnect();
+    resetState();
+    Serial.println("Ready for next recording. Type 'r' to start again.\n");
+}
+
+void resetState() {
+    isWaitingForRecord = false;
+    isCountingDown = false;
+    isRecording = false;
+    isWaitingForResponse = false;
+    countdownSeconds = 5;
+    recordingSeconds = 3;
 }

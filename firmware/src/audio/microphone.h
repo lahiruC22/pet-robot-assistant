@@ -2,7 +2,6 @@
 #define MICROPHONE_H
 
 #include <driver/i2s.h>
-#include <esp_psram.h>
 #include <Arduino.h>
 
 /**

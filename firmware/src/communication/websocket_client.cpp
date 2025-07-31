@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 #include "websocket_client.h"
 
 // ElevenLabs WebSocket server certificate (root CA)
@@ -132,14 +130,35 @@ void ElevenLabsClient::reconnect() {
     }
 }
 
-void ElevenLabsClient::sendAudio(const uint8_t* data, size_t length) {
+void ElevenLabsClient::sendAudio(const char* base64AudioData) {
     if (!connected) {
         handleError("Cannot send audio: WebSocket not connected");
         return;
     }
     
-    // Audio functionality temporarily disabled
-    Serial.println("Audio sending not implemented yet");
+    if (WiFi.status() != WL_CONNECTED) {
+        handleError("Cannot send audio: WiFi not connected");
+        return;
+    }
+    
+    if (!base64AudioData || strlen(base64AudioData) == 0) {
+        handleError("Cannot send audio: No audio data provided");
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["type"] = "user_audio";
+    doc["audio_base_64"] = base64AudioData;
+    
+    String message;
+    serializeJson(doc, message);
+    
+    bool success = webSocket.sendTXT(message);
+    if (success) {
+        Serial.printf("Sent audio message: %d characters base64 data\n", strlen(base64AudioData));
+    } else {
+        handleError("Failed to send audio message");
+    }
 }
 
 void ElevenLabsClient::sendText(const char* text) {
@@ -362,15 +381,27 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
         }
     }
     else if (type == "audio") {
-        // Handle audio response
+        // Handle audio response - print base64 encoded string
         if (doc["audio_event"].is<JsonObject>()) {
             uint32_t event_id = doc["audio_event"]["event_id"].as<uint32_t>();
             
-            Serial.printf("Received audio data, event_id: %u (audio processing disabled)\n", event_id);
-            
-            // Audio processing temporarily disabled
-            if (audioCallback) {
-                audioCallback(nullptr, 0, event_id);
+            // Check if audio_base_64 field exists
+            if (doc["audio_event"]["audio_base_64"].is<String>()) {
+                String audioBase64 = doc["audio_event"]["audio_base_64"].as<String>();
+                
+                Serial.printf("\n📻 INCOMING AUDIO RESPONSE (Event ID: %u)\n", event_id);
+                Serial.println("🔊 Base64 Audio Data:");
+                Serial.println("----------------------------------------");
+                Serial.println(audioBase64);
+                Serial.println("----------------------------------------");
+                Serial.printf("Audio length: %d characters\n\n", audioBase64.length());
+                
+                // Call audio callback if registered
+                if (audioCallback) {
+                    audioCallback(nullptr, audioBase64.length(), event_id);
+                }
+            } else {
+                Serial.printf("📻 Received audio event (Event ID: %u) but no audio data found\n", event_id);
             }
         }
     }
@@ -519,4 +550,3 @@ void ElevenLabsClient::onPing(PingCallback callback) {
 void ElevenLabsClient::setOverrideAudio(bool override) {
     overrideAudio = override;
 }
->>>>>>> upstream/feature/WIZ-53-websocket-connection

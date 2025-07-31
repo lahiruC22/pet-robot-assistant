@@ -105,7 +105,7 @@ bool Microphone::startRecording(uint8_t durationSeconds) {
     recording = true;
     recordingStartTime = millis();
 
-    Serial.println("[MIC] 🎤 Recording started!");
+    Serial.println("[MIC] Recording started!");
     return true;
 }
 
@@ -126,7 +126,7 @@ String Microphone::getBase64AudioData() {
     Serial.println("[MIC] Encoding audio data to base64...");
     String encodedData = base64::encode((uint8_t*)audioBuffer, totalBytes);
     
-    Serial.printf("[MIC] ✅ Base64 encoding complete - Length: %d characters\n", encodedData.length());
+    Serial.printf("[MIC] Base64 encoding complete - Length: %d characters\n", encodedData.length());
     return encodedData;
 }
 
@@ -149,7 +149,7 @@ void Microphone::clearBuffer() {
     freeBuffers();
     samplesRecorded = 0;
     recordingComplete = false;
-    Serial.println("[MIC] 🧹 Audio buffer cleared");
+    Serial.println("[MIC] Audio buffer cleared");
 }
 
 void Microphone::getRecordingStats(size_t& totalSamples, size_t& totalBytes, uint32_t& sampleRate) {
