@@ -212,7 +212,7 @@ void connectAndSendAudio(String audioBase64) {
     }
     
     // Send the audio data
-    Serial.println("\n=== Sending Audio Data ===");
+    Serial.println("\n== Sending Audio Data ==");
     Serial.printf("Sending %d characters of base64 audio data...\n", audioBase64.length());
     
     elevenLabsClient.sendAudio(audioBase64.c_str());
