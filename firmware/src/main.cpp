@@ -5,6 +5,14 @@
 #include "communication/websocket_client.h"
 #include "audio/microphone.h"
 
+// Function declarations  
+void startRecordingSequence();
+void handleCountdown();
+void startRecording();
+void handleRecordingComplete();
+void connectAndSendAudio(String audioBase64);
+void resetState();
+
 // Global instances
 WiFiManager wifiManager;
 ElevenLabsClient elevenLabsClient;
@@ -28,9 +36,7 @@ void setup() {
     
     // Initialize WiFi
     Serial.println("Initializing WiFi...");
-    wifiManager.begin(WIFI_SSID, WIFI_PASSWORD);
-    
-    if (!wifiManager.isConnected()) {
+    if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)) {
         Serial.println("Failed to connect to WiFi. Restarting...");
         ESP.restart();
     }
@@ -53,15 +59,12 @@ void setup() {
 }
 
 void loop() {
-    // Handle WiFi connection
-    wifiManager.loop();
-    
     // Handle WebSocket connection (only when needed)
     if (elevenLabsClient.isConnected()) {
         elevenLabsClient.loop();
     }
     
-    // Handle microphone
+    // Handle microphone recording process
     microphone.loop();
     
     // Handle serial input for 'r' command
@@ -134,11 +137,16 @@ void handleRecordingComplete() {
     Serial.println("🎉 Recording complete!");
     isRecording = false;
     
-    // Get base64 encoded audio
+    // Get base64 encoded audio data from PSRAM
     String audioBase64 = microphone.getBase64AudioData();
     
     if (audioBase64.length() > 0) {
         Serial.printf("Audio recorded: %d characters base64 data\n", audioBase64.length());
+        
+        // Print base64 data to serial for verification
+        Serial.println("\n=== Base64 Audio Data ===");
+        Serial.println(audioBase64);
+        Serial.println("=== End Base64 Data ===\n");
         
         // Connect to WebSocket and send audio
         connectAndSendAudio(audioBase64);
