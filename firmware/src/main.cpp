@@ -36,13 +36,7 @@ void setup() {
     
     // Initialize WiFi
     Serial.println("Initializing WiFi...");
-<<<<<<< HEAD
-    wifiManager.connect(WIFI_SSID, WIFI_PASSWORD);
-    
-    if (!wifiManager.isConnected()) {
-=======
     if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)) {
->>>>>>> origin/develop
         Serial.println("Failed to connect to WiFi. Restarting...");
         ESP.restart();
     }
