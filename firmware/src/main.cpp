@@ -170,7 +170,7 @@ void connectAndSendAudio(String audioBase64) {
     
     elevenLabsClient.onAgentResponse([](const char* response) {
         Serial.println("\n" + String("=").substring(0, 50));
-        Serial.println("AI AGENT RESPONSE:");
+        Serial.println(" AI AGENT RESPONSE:");
         Serial.println(response);
         Serial.println(String("=").substring(0, 50) + "\n");
     });
