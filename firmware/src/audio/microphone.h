@@ -30,7 +30,7 @@ public:
      * @param bufferLen DMA buffer length
      * @return true if initialization successful, false otherwise
      */
-    bool begin(uint32_t sampleRate = 16000, uint8_t bitsPerSample = 16, size_t bufferLen = 256);
+    bool begin(uint32_t sampleRate = 16000, uint8_t bitsPerSample = 16, int bufferLen = 256);
 
     /**
      * @brief Start recording audio for specified duration
@@ -38,6 +38,12 @@ public:
      * @return true if recording started successfully, false otherwise
      */
     bool startRecording(uint8_t durationSeconds = 5);
+
+    /**
+     * @brief Main loop function to handle recording process
+     * Call this repeatedly in the main loop when recording
+     */
+    void loop();
 
     /**
      * @brief Check if recording is currently in progress
@@ -92,7 +98,7 @@ private:
     // Recording parameters
     uint32_t sampleRate;
     uint8_t bitsPerSample;
-    size_t bufferLen;
+    int bufferLen;
     uint8_t recordingDuration;
     
     // Audio buffers

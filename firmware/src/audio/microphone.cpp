@@ -23,7 +23,7 @@ Microphone::~Microphone() {
     freeBuffers();
 }
 
-bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, size_t bufferLen) {
+bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
     if (initialized) {
         Serial.println("[MIC] Already initialized");
         return true;
@@ -52,6 +52,7 @@ bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, size_t buffer
     // Configure pins
     if (!configurePins()) {
         Serial.println("[MIC] ERROR: Failed to configure I2S pins");
+        i2s_driver_uninstall(I2S_PORT);  // Cleanup on failure
         return false;
     }
 
@@ -59,13 +60,16 @@ bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, size_t buffer
     esp_err_t err = i2s_start(I2S_PORT);
     if (err != ESP_OK) {
         Serial.printf("[MIC] ERROR: Failed to start I2S: %s\n", esp_err_to_name(err));
+        i2s_driver_uninstall(I2S_PORT);  // Cleanup on failure
         return false;
     }
 
-    // Allocate temporary buffer
+    // Allocate temporary buffer (freed in stop())
     tempBuffer = (int16_t*)malloc(bufferLen * sizeof(int16_t));
     if (tempBuffer == nullptr) {
         Serial.println("[MIC] ERROR: Failed to allocate temporary buffer");
+        i2s_stop(I2S_PORT);
+        i2s_driver_uninstall(I2S_PORT);
         return false;
     }
 
@@ -82,6 +86,11 @@ bool Microphone::startRecording(uint8_t durationSeconds) {
 
     if (recording) {
         Serial.println("[MIC] WARNING: Recording already in progress");
+        return false;
+    }
+    
+    if (tempBuffer == nullptr) {
+        Serial.println("[MIC] ERROR: Temporary buffer not allocated");
         return false;
     }
 
@@ -107,6 +116,12 @@ bool Microphone::startRecording(uint8_t durationSeconds) {
 
     Serial.println("[MIC] Recording started!");
     return true;
+}
+
+void Microphone::loop() {
+    if (recording && !recordingComplete) {
+        recordChunk();
+    }
 }
 
 bool Microphone::isRecording() {
@@ -170,6 +185,12 @@ void Microphone::stop() {
         initialized = false;
         Serial.println("[MIC] I2S driver stopped");
     }
+    
+    // Free the temporary buffer here since it's allocated in begin()
+    if (tempBuffer != nullptr) {
+        free(tempBuffer);
+        tempBuffer = nullptr;
+    }
 }
 
 bool Microphone::installI2S() {
@@ -228,17 +249,21 @@ bool Microphone::allocateBuffers() {
 
 void Microphone::freeBuffers() {
     if (audioBuffer != nullptr) {
-        free(audioBuffer);
+        free(audioBuffer);  // This is correct - ps_malloc memory is freed with regular free()
         audioBuffer = nullptr;
     }
-    if (tempBuffer != nullptr) {
-        free(tempBuffer);
-        tempBuffer = nullptr;
-    }
+    // Note: tempBuffer is not freed here - it's managed separately in stop()
 }
 
 bool Microphone::recordChunk() {
     if (!recording || recordingComplete) {
+        return false;
+    }
+    
+    // Safety check - ensure buffers are allocated
+    if (tempBuffer == nullptr || audioBuffer == nullptr) {
+        Serial.println("[MIC] ERROR: Buffers not allocated!");
+        recording = false;
         return false;
     }
 
@@ -254,7 +279,19 @@ bool Microphone::recordChunk() {
         }
         
         // Copy samples to PSRAM buffer
-        memcpy(&audioBuffer[samplesRecorded], tempBuffer, samplesToCopy * sizeof(int16_t));
+        // memcpy(&audioBuffer[samplesRecorded], tempBuffer, samplesToCopy * sizeof(int16_t));
+        float gain = 2.0f;  // Adjust this gain value as needed (e.g., 1.0 = no change, 2.0 = +6 dB)
+
+        for (size_t i = 0; i < samplesToCopy; ++i) {
+            int32_t amplifiedSample = static_cast<int32_t>(tempBuffer[i] * gain);
+
+            // Clip to int16_t range to avoid overflow
+            if (amplifiedSample > INT16_MAX) amplifiedSample = INT16_MAX;
+            if (amplifiedSample < INT16_MIN) amplifiedSample = INT16_MIN;
+
+            audioBuffer[samplesRecorded + i] = static_cast<int16_t>(amplifiedSample);
+        }
+
         samplesRecorded += samplesToCopy;
         
         // Progress indicator every second
