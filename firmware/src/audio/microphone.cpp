@@ -70,7 +70,7 @@ bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, size_t buffer
     }
 
     initialized = true;
-    Serial.println("[MIC] ✅ I2S microphone initialized successfully");
+    Serial.println("[MIC] I2S microphone initialized successfully");
     return true;
 }
 
@@ -161,7 +161,7 @@ void Microphone::getRecordingStats(size_t& totalSamples, size_t& totalBytes, uin
 void Microphone::stop() {
     if (recording) {
         recording = false;
-        Serial.println("[MIC] 🛑 Recording stopped");
+        Serial.println("[MIC] Recording stopped");
     }
 
     if (initialized) {
@@ -222,7 +222,7 @@ bool Microphone::allocateBuffers() {
         return false;
     }
 
-    Serial.printf("[MIC] ✅ Allocated %d bytes in PSRAM for audio buffer\n", totalBytes);
+    Serial.printf("[MIC] Allocated %d bytes in PSRAM for audio buffer\n", totalBytes);
     return true;
 }
 
@@ -260,7 +260,7 @@ bool Microphone::recordChunk() {
         // Progress indicator every second
         if (samplesRecorded % sampleRate == 0) {
             uint8_t secondsRecorded = samplesRecorded / sampleRate;
-            Serial.printf("[MIC] 📊 Recorded %d/%d seconds\n", secondsRecorded, recordingDuration);
+            Serial.printf("[MIC] Recorded %d/%d seconds\n", secondsRecorded, recordingDuration);
         }
         
         // Check if recording is complete
@@ -268,7 +268,7 @@ bool Microphone::recordChunk() {
             recording = false;
             recordingComplete = true;
             unsigned long recordingTime = millis() - recordingStartTime;
-            Serial.printf("[MIC] 🎉 Recording complete! Duration: %lu ms\n", recordingTime);
+            Serial.printf("[MIC] Recording complete! Duration: %lu ms\n", recordingTime);
             Serial.printf("[MIC] Total samples recorded: %d\n", samplesRecorded);
             Serial.printf("[MIC] Total bytes recorded: %d\n", samplesRecorded * sizeof(int16_t));
             return false;

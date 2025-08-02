@@ -389,8 +389,8 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
             if (doc["audio_event"]["audio_base_64"].is<String>()) {
                 String audioBase64 = doc["audio_event"]["audio_base_64"].as<String>();
                 
-                Serial.printf("\n📻 INCOMING AUDIO RESPONSE (Event ID: %u)\n", event_id);
-                Serial.println("🔊 Base64 Audio Data:");
+                Serial.printf("\n INCOMING AUDIO RESPONSE (Event ID: %u)\n", event_id);
+                Serial.println(" Base64 Audio Data:");
                 Serial.println("----------------------------------------");
                 Serial.println(audioBase64);
                 Serial.println("----------------------------------------");
@@ -401,7 +401,7 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
                     audioCallback(nullptr, audioBase64.length(), event_id);
                 }
             } else {
-                Serial.printf("📻 Received audio event (Event ID: %u) but no audio data found\n", event_id);
+                Serial.printf("Received audio event (Event ID: %u) but no audio data found\n", event_id);
             }
         }
     }
