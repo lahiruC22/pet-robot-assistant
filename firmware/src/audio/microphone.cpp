@@ -279,7 +279,19 @@ bool Microphone::recordChunk() {
         }
         
         // Copy samples to PSRAM buffer
-        memcpy(&audioBuffer[samplesRecorded], tempBuffer, samplesToCopy * sizeof(int16_t));
+        // memcpy(&audioBuffer[samplesRecorded], tempBuffer, samplesToCopy * sizeof(int16_t));
+        float gain = 2.0f;  // Adjust this gain value as needed (e.g., 1.0 = no change, 2.0 = +6 dB)
+
+        for (size_t i = 0; i < samplesToCopy; ++i) {
+            int32_t amplifiedSample = static_cast<int32_t>(tempBuffer[i] * gain);
+
+            // Clip to int16_t range to avoid overflow
+            if (amplifiedSample > INT16_MAX) amplifiedSample = INT16_MAX;
+            if (amplifiedSample < INT16_MIN) amplifiedSample = INT16_MIN;
+
+            audioBuffer[samplesRecorded + i] = static_cast<int16_t>(amplifiedSample);
+        }
+
         samplesRecorded += samplesToCopy;
         
         // Progress indicator every second
