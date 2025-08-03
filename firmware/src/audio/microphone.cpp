@@ -1,6 +1,6 @@
 #include "microphone.h"
 #include "../config.h"
-#include <base64.h>
+#include "mbedtls/base64.h"
 
 Microphone::Microphone() : 
     sampleRate(MIC_SAMPLE_RATE),
@@ -139,7 +139,32 @@ String Microphone::getBase64AudioData() {
     }
 
     Serial.println("[MIC] Encoding audio data to base64...");
-    String encodedData = base64::encode((uint8_t*)audioBuffer, totalBytes);
+    
+    // Calculate required buffer size for base64 encoding
+    size_t encodedLen = 0;
+    mbedtls_base64_encode(NULL, 0, &encodedLen, (const unsigned char*)audioBuffer, totalBytes);
+    
+    // Allocate buffer for encoded data
+    char* encodedBuffer = (char*)malloc(encodedLen + 1);
+    if (encodedBuffer == nullptr) {
+        Serial.println("[MIC] ERROR: Failed to allocate encoding buffer");
+        return "";
+    }
+    
+    // Perform base64 encoding
+    size_t actualLen = 0;
+    int result = mbedtls_base64_encode((unsigned char*)encodedBuffer, encodedLen, &actualLen, 
+                                      (const unsigned char*)audioBuffer, totalBytes);
+    
+    if (result != 0) {
+        Serial.println("[MIC] ERROR: Base64 encoding failed");
+        free(encodedBuffer);
+        return "";
+    }
+    
+    encodedBuffer[actualLen] = '\0';  // Null terminate
+    String encodedData = String(encodedBuffer);
+    free(encodedBuffer);
     
     Serial.printf("[MIC] Base64 encoding complete - Length: %d characters\n", encodedData.length());
     return encodedData;

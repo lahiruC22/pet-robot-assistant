@@ -4,249 +4,349 @@
 #include "communication/wifi_manager.h"
 #include "communication/websocket_client.h"
 #include "audio/microphone.h"
-
-// Function declarations  
-void startRecordingSequence();
-void handleCountdown();
-void startRecording();
-void handleRecordingComplete();
-void connectAndSendAudio(String audioBase64);
-void resetState();
+#include "speaker/speaker.h"
 
 // Global instances
 WiFiManager wifiManager;
 ElevenLabsClient elevenLabsClient;
 Microphone microphone;
+Speaker speaker;
 
-// State management
-bool isWaitingForRecord = false;
-bool isCountingDown = false;
-bool isRecording = false;
-bool isWaitingForResponse = false;
-unsigned long countdownStart = 0;
-unsigned long recordingStart = 0;
-int countdownSeconds = 5;
-int recordingSeconds = 3;
+// Conversation state management
+enum ConversationState {
+    IDLE,
+    CONNECTING,
+    WAITING_FOR_TRIGGER,
+    COUNTDOWN,
+    RECORDING,
+    PROCESSING_AUDIO,
+    WAITING_FOR_RESPONSE,
+    PLAYING_RESPONSE,
+    ERROR_STATE
+};
+
+ConversationState currentState = IDLE;
+unsigned long stateTimer = 0;
+int countdownSeconds = 0;
+bool autoMode = false;  // Manual trigger vs auto conversation mode
+
+// Function declarations
+void initializeHardware();
+void initializeElevenLabs();
+void handleSerialInput();
+void handleConversationFlow();
+void changeState(ConversationState newState);
+void startRecordingSequence();
+void handleCountdown();
+void processRecordedAudio();
+void setupElevenLabsCallbacks();
+
+// ElevenLabs event handlers
+void onConversationInit(const char* conversation_id);
+void onAgentResponse(const char* response);
+void onAudioData(const String& base64Audio, uint32_t event_id);
+void onError(const char* error_message);
+void onTranscript(const char* transcript);
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
     
-    Serial.println("\n=== Pet Robot Assistant Starting ===");
+    Serial.println("\n" + String("=").substring(0, 50));
+    Serial.println(" PET ROBOT ASSISTANT - CONVERSATIONAL AI");
+    Serial.println(" Real-time Voice Conversation System");
+    Serial.println(" ElevenLabs Integration");
+    Serial.println(String("=").substring(0, 50));
     
-    // Initialize WiFi
+    // Initialize all hardware components
+    initializeHardware();
+    
+    // Setup ElevenLabs callbacks
+    setupElevenLabsCallbacks();
+    
+    // Initialize ElevenLabs connection
+    initializeElevenLabs();
+    
+    Serial.println("\n" + String("=").substring(0, 50));
+    Serial.println("READY FOR CONVERSATION!");
+    Serial.println("Commands:");
+    Serial.println("  'r' + Enter: Start single recording");
+    Serial.println("  'a' + Enter: Toggle auto conversation mode");
+    Serial.println("  's' + Enter: Stop current operation");
+    Serial.println("  'v' + Enter: Adjust speaker volume");
+    Serial.println(String("=").substring(0, 50) + "\n");
+    
+    changeState(WAITING_FOR_TRIGGER);
+}
+
+void loop() {
+    // Handle WebSocket communication
+    if (elevenLabsClient.isConnected()) {
+        elevenLabsClient.loop();
+    }
+    
+    // Handle audio systems
+    microphone.loop();
+    speaker.loop();
+    
+    // Handle serial commands
+    handleSerialInput();
+    
+    // Main conversation flow state machine
+    handleConversationFlow();
+    
+    delay(10);  // Small delay to prevent overwhelming the CPU
+}
+
+void initializeHardware() {
     Serial.println("Initializing WiFi...");
     if (!wifiManager.connect(WIFI_SSID, WIFI_PASSWORD)) {
         Serial.println("Failed to connect to WiFi. Restarting...");
         ESP.restart();
     }
+    Serial.println("WiFi connected: " + WiFi.localIP().toString());
     
-    Serial.println("WiFi connected successfully!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Initialize microphone
     Serial.println("Initializing microphone...");
     if (!microphone.begin(MIC_SAMPLE_RATE)) {
         Serial.println("Failed to initialize microphone!");
+        changeState(ERROR_STATE);
         return;
     }
-    Serial.println("Microphone initialized successfully!");
+    Serial.println("Microphone initialized");
     
-    Serial.println("\n=== Ready for Commands ===");
-    Serial.println("Type 'r' and press Enter to start recording sequence");
-    Serial.println("=======================================\n");
+    Serial.println("Initializing speaker...");
+    if (!speaker.begin(SPEAKER_SAMPLE_RATE)) {
+        Serial.println("Failed to initialize speaker!");
+        changeState(ERROR_STATE);
+        return;
+    }
+    Serial.println("Speaker initialized");
+    speaker.setVolume(0.7f);  // Set default volume to 70%
 }
 
-void loop() {
-    // Handle WebSocket connection (only when needed)
-    if (elevenLabsClient.isConnected()) {
-        elevenLabsClient.loop();
-    }
-    
-    // Handle microphone recording process
-    microphone.loop();
-    
-    // Handle serial input for 'r' command
-    if (Serial.available() && !isWaitingForRecord && !isCountingDown && !isRecording) {
-        String input = Serial.readStringUntil('\n');
-        input.trim();
-        
-        if (input.equals("r") || input.equals("R")) {
-            startRecordingSequence();
-        }
-    }
-    
-    // Handle countdown
-    if (isCountingDown) {
-        handleCountdown();
-    }
-    
-    // Handle recording completion
-    if (isRecording && microphone.isRecordingComplete()) {
-        handleRecordingComplete();
-    }
-    
-    delay(10);
+void setupElevenLabsCallbacks() {
+    elevenLabsClient.onConversationInit(onConversationInit);
+    elevenLabsClient.onAgentResponse(onAgentResponse);
+    elevenLabsClient.onAudioData(onAudioData);
+    elevenLabsClient.onError(onError);
+    elevenLabsClient.onTranscript(onTranscript);
 }
 
-void startRecordingSequence() {
-    Serial.println("\n=== Starting Recording Sequence ===");
-    Serial.println("Preparing for 5-second countdown...");
-    
-    isWaitingForRecord = true;
-    isCountingDown = true;
-    countdownStart = millis();
-    countdownSeconds = 5;
-    
-    Serial.printf("Countdown: %d seconds remaining\n", countdownSeconds);
-}
-
-void handleCountdown() {
-    unsigned long elapsed = millis() - countdownStart;
-    
-    if (elapsed >= 1000) { // Every second
-        countdownSeconds--;
-        countdownStart = millis();
-        
-        if (countdownSeconds > 0) {
-            Serial.printf("Countdown: %d seconds remaining\n", countdownSeconds);
-        } else {
-            // Start recording
-            Serial.println("\n Starting 3-second recording NOW!");
-            startRecording();
-        }
-    }
-}
-
-void startRecording() {
-    isCountingDown = false;
-    isRecording = true;
-    recordingStart = millis();
-    
-    // Start 3-second recording
-    if (microphone.startRecording(3)) {
-        Serial.println("Recording started successfully!");
-    } else {
-        Serial.println("Failed to start recording!");
-        resetState();
-    }
-}
-
-void handleRecordingComplete() {
-    Serial.println("Recording complete!");
-    isRecording = false;
-    
-    // Get base64 encoded audio data from PSRAM
-    String audioBase64 = microphone.getBase64AudioData();
-    
-    if (audioBase64.length() > 0) {
-        Serial.printf("Audio recorded: %d characters base64 data\n", audioBase64.length());
-        
-        // Print base64 data to serial for verification
-        Serial.println("\n=== Base64 Audio Data ===");
-        Serial.println(audioBase64);
-        Serial.println("=== End Base64 Data ===\n");
-        
-        // Connect to WebSocket and send audio
-        connectAndSendAudio(audioBase64);
-    } else {
-        Serial.println("Error: No audio data recorded!");
-        resetState();
-    }
-    
-    // Clear microphone buffer for next recording
-    microphone.clearBuffer();
-}
-
-void connectAndSendAudio(String audioBase64) {
-    Serial.println("\n=== Connecting to ElevenLabs WebSocket ===");
-    
-    // Set up callbacks for WebSocket events
-    elevenLabsClient.onConversationInit([](const char* conversation_id) {
-        Serial.printf("Conversation initialized: %s\n", conversation_id);
-        isWaitingForResponse = true;
-    });
-    
-    elevenLabsClient.onAgentResponse([](const char* response) {
-        Serial.println("\n" + String("=").substring(0, 50));
-        Serial.println("AI AGENT RESPONSE:");
-        Serial.println(response);
-        Serial.println(String("=").substring(0, 50) + "\n");
-    });
-    
-    elevenLabsClient.onAudioData([](const uint8_t* data, size_t length, uint32_t event_id) {
-        // This callback is triggered when audio data is received
-        Serial.printf("Received audio chunk: event_id=%u, length=%u\n", event_id, length);
-    });
-    
-    elevenLabsClient.onError([](const char* error_message) {
-        Serial.printf("WebSocket Error: %s\n", error_message);
-    });
+void initializeElevenLabs() {
+    Serial.println("Connecting to ElevenLabs...");
+    changeState(CONNECTING);
     
     // Initialize WebSocket connection
     elevenLabsClient.begin(ELEVEN_LABS_AGENT_ID);
     
-    // Wait for connection and initialization
-    Serial.println("Waiting for WebSocket connection and initialization...");
-    
+    // Wait for connection with timeout
     unsigned long connectionStart = millis();
-    bool connectionEstablished = false;
-    bool conversationInitialized = false;
+    bool connected = false;
     
-    // Wait up to 15 seconds for connection and initialization
-    while (millis() - connectionStart < 15000) {
+    while (millis() - connectionStart < 15000) {  // 15 second timeout
         elevenLabsClient.loop();
         
-        if (!connectionEstablished && elevenLabsClient.isConnected()) {
-            Serial.println("WebSocket connected!");
-            connectionEstablished = true;
-        }
-        
-        if (connectionEstablished && isWaitingForResponse) {
-            Serial.println("Conversation initialized!");
-            conversationInitialized = true;
+        if (elevenLabsClient.isConnected()) {
+            connected = true;
             break;
         }
-        
         delay(100);
     }
     
-    if (!conversationInitialized) {
-        Serial.println("Failed to establish connection or initialize conversation!");
-        elevenLabsClient.disconnect();
-        resetState();
-        return;
+    if (connected) {
+        Serial.println("ElevenLabs connected successfully");
+    } else {
+        Serial.println("Failed to connect to ElevenLabs");
+        changeState(ERROR_STATE);
     }
-    
-    // Send the audio data
-    Serial.println("\n== Sending Audio Data ==");
-    Serial.printf("Sending %d characters of base64 audio data...\n", audioBase64.length());
-    
-    elevenLabsClient.sendAudio(audioBase64.c_str());
-    
-    // Listen for responses
-    Serial.println("\n=== Listening for Responses ===");
-    Serial.println("Waiting for agent response and audio...");
-    
-    // Listen for 30 seconds for responses
-    unsigned long listenStart = millis();
-    while (millis() - listenStart < 30000) {
-        elevenLabsClient.loop();
-        delay(50);
-    }
-    
-    Serial.println("\n=== Session Complete ===");
-    elevenLabsClient.disconnect();
-    resetState();
-    Serial.println("Ready for next recording. Type 'r' to start again.\n");
 }
 
-void resetState() {
-    isWaitingForRecord = false;
-    isCountingDown = false;
-    isRecording = false;
-    isWaitingForResponse = false;
-    countdownSeconds = 5;
-    recordingSeconds = 3;
+void handleSerialInput() {
+    if (Serial.available()) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        input.toLowerCase();
+        
+        if (input == "r") {
+            if (currentState == WAITING_FOR_TRIGGER) {
+                Serial.println("Starting recording sequence...");
+                startRecordingSequence();
+            } else {
+                Serial.println("Can't start recording in current state");
+            }
+        }
+        else if (input == "a") {
+            autoMode = !autoMode;
+            Serial.println("Auto conversation mode: " + String(autoMode ? "ON" : "OFF"));
+            
+            if (autoMode && currentState == WAITING_FOR_TRIGGER) {
+                Serial.println("Starting auto conversation...");
+                startRecordingSequence();
+            }
+        }
+        else if (input == "s") {
+            Serial.println("Stopping current operation...");
+            speaker.stop();
+            microphone.clearBuffer();
+            changeState(WAITING_FOR_TRIGGER);
+        }
+        else if (input == "v") {
+            float currentVolume = speaker.getVolume();
+            float newVolume = (currentVolume >= 1.0f) ? 0.3f : currentVolume + 0.2f;
+            speaker.setVolume(newVolume);
+            Serial.printf("Speaker volume: %.1f%%\n", newVolume * 100);
+        }
+        else if (input.length() > 0) {
+            Serial.println("Unknown command: " + input);
+        }
+    }
+}
+
+void handleConversationFlow() {
+    switch (currentState) {
+        case WAITING_FOR_TRIGGER:
+            // Idle state - waiting for user input
+            break;
+            
+        case COUNTDOWN:
+            handleCountdown();
+            break;
+            
+        case RECORDING:
+            if (microphone.isRecordingComplete()) {
+                Serial.println("Recording complete!");
+                changeState(PROCESSING_AUDIO);
+            }
+            break;
+            
+        case PROCESSING_AUDIO:
+            processRecordedAudio();
+            break;
+            
+        case WAITING_FOR_RESPONSE:
+            // Waiting for agent response and audio
+            break;
+            
+        case PLAYING_RESPONSE:
+            if (!speaker.isPlaying()) {
+                Serial.println("Response playback complete!");
+                
+                if (autoMode) {
+                    Serial.println("Auto mode: Starting next recording cycle...");
+                    delay(1000);  // Brief pause before next recording
+                    startRecordingSequence();
+                } else {
+                    changeState(WAITING_FOR_TRIGGER);
+                }
+            }
+            break;
+            
+        case ERROR_STATE:
+            // Error state - system halted
+            Serial.println("System in error state. Reset required.");
+            delay(5000);
+            break;
+            
+        default:
+            break;
+    }
+}
+
+void changeState(ConversationState newState) {
+    if (currentState != newState) {
+        currentState = newState;
+        stateTimer = millis();
+        
+        // Optional: Print state changes for debugging
+        // Serial.printf("[STATE] Changed to: %d\n", (int)newState);
+    }
+}
+
+void startRecordingSequence() {
+    Serial.println("Starting 3-second countdown...");
+    countdownSeconds = 3;
+    changeState(COUNTDOWN);
+}
+
+void handleCountdown() {
+    if (millis() - stateTimer >= 1000) {  // Every second
+        Serial.printf("Recording in: %d\n", countdownSeconds);
+        countdownSeconds--;
+        stateTimer = millis();
+        
+        if (countdownSeconds <= 0) {
+            Serial.println("RECORDING NOW!");
+            if (microphone.startRecording(3)) {  // 3-second recording
+                changeState(RECORDING);
+            } else {
+                Serial.println("Failed to start recording!");
+                changeState(ERROR_STATE);
+            }
+        }
+    }
+}
+
+void processRecordedAudio() {
+    String audioBase64 = microphone.getBase64AudioData();
+    
+    if (audioBase64.length() > 0) {
+        Serial.printf("Sending audio (%d chars) to ElevenLabs...\n", audioBase64.length());
+        
+        // Send audio to ElevenLabs
+        elevenLabsClient.sendAudio(audioBase64.c_str());
+        
+        // Clear microphone buffer
+        microphone.clearBuffer();
+        
+        changeState(WAITING_FOR_RESPONSE);
+    } else {
+        Serial.println("No audio data recorded!");
+        changeState(WAITING_FOR_TRIGGER);
+    }
+}
+
+// ElevenLabs Event Handlers
+void onConversationInit(const char* conversation_id) {
+    Serial.println("Conversation initialized: " + String(conversation_id));
+}
+
+void onAgentResponse(const char* response) {
+    Serial.println("\n" + String("=").substring(0, 40));
+    Serial.println("AGENT RESPONSE:");
+    Serial.println(response);
+    Serial.println(String("=").substring(0, 40));
+}
+
+void onAudioData(const String& base64Audio, uint32_t event_id) {
+    Serial.printf("Received audio response (Event: %u, %d chars)\n", event_id, base64Audio.length());
+    
+    // Play the audio through speaker
+    if (speaker.playBase64Audio(base64Audio)) {
+        Serial.println("Playing agent response audio...");
+        changeState(PLAYING_RESPONSE);
+    } else {
+        Serial.println("Failed to start audio playback!");
+        if (autoMode) {
+            // Continue conversation even if audio fails
+            delay(2000);
+            startRecordingSequence();
+        } else {
+            changeState(WAITING_FOR_TRIGGER);
+        }
+    }
+}
+
+void onTranscript(const char* transcript) {
+    Serial.println("User transcript: " + String(transcript));
+}
+
+void onError(const char* error_message) {
+    Serial.println("ElevenLabs Error: " + String(error_message));
+    
+    // Attempt to recover from errors
+    if (currentState == WAITING_FOR_RESPONSE) {
+        Serial.println("Attempting to recover...");
+        delay(2000);
+        changeState(WAITING_FOR_TRIGGER);
+    }
 }

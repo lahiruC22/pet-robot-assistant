@@ -1,4 +1,5 @@
 #include "websocket_client.h"
+#include "../config.h"
 
 // ElevenLabs WebSocket server certificate (root CA)
 const char* elevenlabs_ca_cert = \
@@ -51,7 +52,8 @@ ElevenLabsClient::ElevenLabsClient() :
     toolCallCallback(nullptr),
     errorCallback(nullptr),
     vadScoreCallback(nullptr),
-    pingCallback(nullptr) {
+    pingCallback(nullptr),
+    conversationEndCallback(nullptr) {
     instance = this;
 }
 
@@ -381,7 +383,7 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
         }
     }
     else if (type == "audio") {
-        // Handle audio response - print base64 encoded string
+        // Handle audio response - enhanced for speaker integration
         if (doc["audio_event"].is<JsonObject>()) {
             uint32_t event_id = doc["audio_event"]["event_id"].as<uint32_t>();
             
@@ -389,19 +391,20 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
             if (doc["audio_event"]["audio_base_64"].is<String>()) {
                 String audioBase64 = doc["audio_event"]["audio_base_64"].as<String>();
                 
-                Serial.printf("\n INCOMING AUDIO RESPONSE (Event ID: %u)\n", event_id);
-                Serial.println(" Base64 Audio Data:");
-                Serial.println("----------------------------------------");
-                Serial.println(audioBase64);
-                Serial.println("----------------------------------------");
-                Serial.printf("Audio length: %d characters\n\n", audioBase64.length());
+                Serial.printf("\n[AUDIO] Received audio response (Event ID: %u)\n", event_id);
+                Serial.printf("[AUDIO] Base64 audio length: %d characters\n", audioBase64.length());
+                Serial.printf("[AUDIO] Estimated audio duration: %.2f seconds\n", 
+                            (audioBase64.length() * 3.0 / 4.0) / (SPEAKER_SAMPLE_RATE * 2));
                 
-                // Call audio callback if registered
+                // Output base64 for logging/debugging
+                Serial.println("[AUDIO_BASE64] " + audioBase64);
+                
+                // Call audio callback with base64 data for speaker
                 if (audioCallback) {
-                    audioCallback(nullptr, audioBase64.length(), event_id);
+                    audioCallback(audioBase64, event_id);
                 }
             } else {
-                Serial.printf("Received audio event (Event ID: %u) but no audio data found\n", event_id);
+                Serial.printf("[AUDIO] Received audio event (Event ID: %u) but no audio data found\n", event_id);
             }
         }
     }
@@ -544,6 +547,10 @@ void ElevenLabsClient::onVadScore(VadScoreCallback callback) {
 
 void ElevenLabsClient::onPing(PingCallback callback) {
     pingCallback = callback;
+}
+
+void ElevenLabsClient::onConversationEnd(ConversationEndCallback callback) {
+    conversationEndCallback = callback;
 }
 
 // Configuration methods
