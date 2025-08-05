@@ -11,6 +11,8 @@ Speaker::Speaker() :
     audioBufferSize(0),
     audioSamples(0),
     playbackPosition(0),
+    stereoBuffer(nullptr),
+    stereoBufferSize(0),
     initialized(false),
     playing(false),
     playbackStartTime(0) {
@@ -28,6 +30,7 @@ Speaker::~Speaker() {
     }
     
     freeAudioBuffer();
+    freeStereoBuffer();
 }
 
 bool Speaker::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
@@ -62,6 +65,15 @@ bool Speaker::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
     esp_err_t err = i2s_start(I2S_PORT);
     if (err != ESP_OK) {
         Serial.printf("[SPEAKER] ERROR: Failed to start I2S: %s\n", esp_err_to_name(err));
+        i2s_driver_uninstall(I2S_PORT);
+        return false;
+    }
+
+    // Allocate stereo buffer for mono-to-stereo conversion
+    // Size it for the maximum chunk size (bufferLen samples * 2 for stereo)
+    if (!allocateStereoBuffer(bufferLen * 2)) {
+        Serial.println("[SPEAKER] ERROR: Failed to allocate stereo buffer");
+        i2s_stop(I2S_PORT);
         i2s_driver_uninstall(I2S_PORT);
         return false;
     }
@@ -265,11 +277,12 @@ bool Speaker::playbackChunk() {
     size_t monoSamplesToWrite = min((size_t)bufferLen, audioSamples - playbackPosition);
     
     // Since we're using I2S_CHANNEL_FMT_RIGHT_LEFT, we need to duplicate mono samples to stereo
-    // Allocate a temporary buffer for stereo data (2x the mono samples)
+    // Use pre-allocated stereo buffer to avoid memory fragmentation
     size_t stereoSamples = monoSamplesToWrite * 2;
-    int16_t* stereoBuffer = (int16_t*)malloc(stereoSamples * sizeof(int16_t));
-    if (stereoBuffer == nullptr) {
-        Serial.println("[SPEAKER] ERROR: Failed to allocate stereo buffer");
+    
+    // Ensure our pre-allocated buffer is large enough
+    if (stereoBuffer == nullptr || stereoSamples * sizeof(int16_t) > stereoBufferSize) {
+        Serial.println("[SPEAKER] ERROR: Stereo buffer too small or not allocated");
         return false;
     }
     
@@ -287,8 +300,6 @@ bool Speaker::playbackChunk() {
                                 &bytesWritten, 
                                 portMAX_DELAY);
     
-    free(stereoBuffer);  // Clean up temporary buffer
-
     if (result == ESP_OK && bytesWritten > 0) {
         size_t stereoSamplesWritten = bytesWritten / sizeof(int16_t);
         size_t monoSamplesWritten = stereoSamplesWritten / 2;  // Convert back to mono count
@@ -376,5 +387,29 @@ void Speaker::freeAudioBuffer() {
         audioBuffer = nullptr;
         audioBufferSize = 0;
         audioSamples = 0;
+    }
+}
+
+bool Speaker::allocateStereoBuffer(size_t maxStereoSamples) {
+    if (stereoBuffer != nullptr) {
+        return true; // Already allocated
+    }
+    
+    stereoBufferSize = maxStereoSamples * sizeof(int16_t);
+    stereoBuffer = (int16_t*)malloc(stereoBufferSize);
+    if (stereoBuffer == nullptr) {
+        Serial.println("Failed to allocate stereo buffer");
+        stereoBufferSize = 0;
+        return false;
+    }
+    
+    return true;
+}
+
+void Speaker::freeStereoBuffer() {
+    if (stereoBuffer != nullptr) {
+        free(stereoBuffer);
+        stereoBuffer = nullptr;
+        stereoBufferSize = 0;
     }
 }

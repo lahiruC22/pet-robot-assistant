@@ -109,6 +109,10 @@ private:
     size_t audioSamples;
     size_t playbackPosition;
     
+    // Stereo conversion buffer (pre-allocated to avoid fragmentation)
+    int16_t* stereoBuffer;
+    size_t stereoBufferSize;
+    
     // State management
     bool initialized;
     bool playing;
@@ -168,6 +172,18 @@ private:
      * @brief Free allocated audio buffer
      */
     void freeAudioBuffer();
+
+    /**
+     * @brief Allocate stereo conversion buffer
+     * @param maxStereoSamples Maximum number of stereo samples the buffer should hold
+     * @return true if allocation successful, false otherwise
+     */
+    bool allocateStereoBuffer(size_t maxStereoSamples);
+
+    /**
+     * @brief Free stereo conversion buffer
+     */
+    void freeStereoBuffer();
 };
 
 #endif
