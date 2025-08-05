@@ -142,8 +142,12 @@ bool Speaker::playRawAudio(const int16_t* audioData, size_t audioSize) {
         stop();
     }
 
-    if (audioData == nullptr || audioSize == 0) {
-        Serial.println("[SPEAKER] ERROR: No audio data provided");
+    if (audioData == nullptr) {
+        Serial.println("[SPEAKER] ERROR: audioData is null");
+        return false;
+    }
+    if (audioSize == 0) {
+        Serial.println("[SPEAKER] ERROR: audioSize is 0");
         return false;
     }
 
