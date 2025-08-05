@@ -394,7 +394,9 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
                 Serial.printf("\n[AUDIO] Received audio response (Event ID: %u)\n", event_id);
                 Serial.printf("[AUDIO] Base64 audio length: %d characters\n", audioBase64.length());
                 Serial.printf("[AUDIO] Estimated audio duration: %.2f seconds\n", 
-                            (audioBase64.length() * 3.0 / 4.0) / (SPEAKER_SAMPLE_RATE * 2));
+                            // Estimated duration calculation assumes 16-bit PCM audio (2 bytes per sample).
+                            // If using a different format, update SPEAKER_BYTES_PER_SAMPLE accordingly.
+                            (audioBase64.length() * 3.0 / 4.0) / (SPEAKER_SAMPLE_RATE * SPEAKER_BYTES_PER_SAMPLE));
                 
                 // Output base64 for logging/debugging
                 Serial.println("[AUDIO_BASE64] " + audioBase64);
