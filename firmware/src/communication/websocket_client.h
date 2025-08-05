@@ -8,7 +8,7 @@
 #include <WiFiClientSecure.h>
 
 // Callback function types for handling server events
-using AudioDataCallback = std::function<void(const uint8_t* data, size_t length, uint32_t event_id)>;
+using AudioDataCallback = std::function<void(const String& base64Audio, uint32_t event_id)>;
 using TranscriptCallback = std::function<void(const char* transcript)>;
 using AgentResponseCallback = std::function<void(const char* response)>;
 using ConversationInitCallback = std::function<void(const char* conversation_id)>;
@@ -16,6 +16,7 @@ using ToolCallCallback = std::function<void(const char* tool_name, const char* t
 using ErrorCallback = std::function<void(const char* error_message)>;
 using VadScoreCallback = std::function<void(float vad_score)>;
 using PingCallback = std::function<void(uint32_t event_id, uint32_t ping_ms)>;
+using ConversationEndCallback = std::function<void()>;
 
 class ElevenLabsClient {
     
@@ -48,6 +49,7 @@ public:
     void onError(ErrorCallback callback);
     void onVadScore(VadScoreCallback callback);
     void onPing(PingCallback callback);
+    void onConversationEnd(ConversationEndCallback callback);
 
     // Configuration methods
     void setOverrideAudio(bool override);
@@ -76,6 +78,7 @@ private:
     ErrorCallback errorCallback;
     VadScoreCallback vadScoreCallback;
     PingCallback pingCallback;
+    ConversationEndCallback conversationEndCallback;
 
     // Internal methods
     static void webSocketEvent(WStype_t type, uint8_t* payload, size_t length);
