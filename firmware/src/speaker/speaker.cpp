@@ -289,7 +289,7 @@ bool Speaker::playbackChunk() {
                                 stereoBuffer, 
                                 bytesToWrite, 
                                 &bytesWritten, 
-                                portMAX_DELAY);
+                                I2S_WRITE_TIMEOUT_TICKS);
     
     free(stereoBuffer);  // Clean up temporary buffer
 
