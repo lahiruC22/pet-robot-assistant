@@ -18,6 +18,15 @@ Speaker::Speaker() :
 
 Speaker::~Speaker() {
     stop();
+    
+    // Properly uninitialize I2S driver if still initialized
+    if (initialized) {
+        i2s_stop(I2S_PORT);
+        i2s_driver_uninstall(I2S_PORT);
+        initialized = false;
+        Serial.println("[SPEAKER] I2S driver uninstalled in destructor");
+    }
+    
     freeAudioBuffer();
 }
 
@@ -161,7 +170,7 @@ void Speaker::stop() {
         playing = false;
         playbackPosition = 0;
         
-        // Stop I2S transmission
+        // Stop I2S transmission without uninstalling driver
         if (initialized) {
             i2s_stop(I2S_PORT);
             i2s_start(I2S_PORT);  // Restart to clear any pending data
@@ -169,13 +178,8 @@ void Speaker::stop() {
         
         Serial.println("[SPEAKER] Audio playback stopped");
     }
-
-    if (initialized) {
-        i2s_stop(I2S_PORT);
-        i2s_driver_uninstall(I2S_PORT);
-        initialized = false;
-        Serial.println("[SPEAKER] I2S driver stopped");
-    }
+    // Remove the hardware deinitialization from stop()
+    // Hardware should only be deinitialized in destructor
 }
 
 void Speaker::setVolume(float volume) {
@@ -218,7 +222,7 @@ bool Speaker::installI2S() {
         .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = sampleRate,
         .bits_per_sample = i2s_bits_per_sample_t(bitsPerSample),
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // Better DAC compatibility
         .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
         .intr_alloc_flags = 0,
         .dma_buf_count = 6,
@@ -258,22 +262,40 @@ bool Speaker::playbackChunk() {
     }
 
     // Calculate how many samples to write in this chunk
-    size_t samplesToWrite = min((size_t)bufferLen, audioSamples - playbackPosition);
-    size_t bytesToWrite = samplesToWrite * sizeof(int16_t);
+    size_t monoSamplesToWrite = min((size_t)bufferLen, audioSamples - playbackPosition);
     
+    // Since we're using I2S_CHANNEL_FMT_RIGHT_LEFT, we need to duplicate mono samples to stereo
+    // Allocate a temporary buffer for stereo data (2x the mono samples)
+    size_t stereoSamples = monoSamplesToWrite * 2;
+    int16_t* stereoBuffer = (int16_t*)malloc(stereoSamples * sizeof(int16_t));
+    if (stereoBuffer == nullptr) {
+        Serial.println("[SPEAKER] ERROR: Failed to allocate stereo buffer");
+        return false;
+    }
+    
+    // Duplicate mono samples to stereo (L and R channels get same data)
+    for (size_t i = 0; i < monoSamplesToWrite; i++) {
+        stereoBuffer[i * 2] = audioBuffer[playbackPosition + i];     // Left channel
+        stereoBuffer[i * 2 + 1] = audioBuffer[playbackPosition + i]; // Right channel
+    }
+    
+    size_t bytesToWrite = stereoSamples * sizeof(int16_t);
     size_t bytesWritten = 0;
     esp_err_t result = i2s_write(I2S_PORT, 
-                                &audioBuffer[playbackPosition], 
+                                stereoBuffer, 
                                 bytesToWrite, 
                                 &bytesWritten, 
                                 portMAX_DELAY);
+    
+    free(stereoBuffer);  // Clean up temporary buffer
 
     if (result == ESP_OK && bytesWritten > 0) {
-        size_t samplesWritten = bytesWritten / sizeof(int16_t);
-        playbackPosition += samplesWritten;
+        size_t stereoSamplesWritten = bytesWritten / sizeof(int16_t);
+        size_t monoSamplesWritten = stereoSamplesWritten / 2;  // Convert back to mono count
+        playbackPosition += monoSamplesWritten;
 
         // Progress indicator (every second)
-        if ((playbackPosition % sampleRate) < samplesWritten) {
+        if ((playbackPosition % sampleRate) < monoSamplesWritten) {
             float secondsPlayed = (float)playbackPosition / sampleRate;
             float totalSeconds = (float)audioSamples / sampleRate;
             Serial.printf("[SPEAKER] Playing: %.1f/%.1f seconds\n", secondsPlayed, totalSeconds);

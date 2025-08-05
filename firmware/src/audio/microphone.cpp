@@ -142,7 +142,20 @@ String Microphone::getBase64AudioData() {
     
     // Calculate required buffer size for base64 encoding
     size_t encodedLen = 0;
-    mbedtls_base64_encode(NULL, 0, &encodedLen, (const unsigned char*)audioBuffer, totalBytes);
+    int result = mbedtls_base64_encode(NULL, 0, &encodedLen, 
+                                      (const unsigned char*)audioBuffer, totalBytes);
+
+    // When called with dlen=0, mbedtls_base64_encode returns MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL
+    // and sets encodedLen to the required buffer size. This is expected behavior.
+    if (result != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        Serial.println("[MIC] ERROR: Failed to calculate base64 buffer size");
+        return "";
+    }
+
+    if (encodedLen == 0) {
+        Serial.println("[MIC] ERROR: Invalid base64 buffer size calculation");
+        return "";
+    }
     
     // Allocate buffer for encoded data
     char* encodedBuffer = (char*)malloc(encodedLen + 1);

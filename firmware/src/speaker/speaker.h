@@ -136,7 +136,24 @@ private:
      * @brief Decode base64 audio data to PCM samples
      * @param base64Data Base64 encoded audio string
      * @param decodedSize Reference to store decoded data size
-     * @return Pointer to decoded PCM data (caller should free this memory)
+     * @return Pointer to decoded PCM data
+     * 
+     * @warning MEMORY OWNERSHIP: The returned pointer is allocated with malloc()
+     *          and MUST be freed by the caller using free(). Failure to do so
+     *          will result in memory leaks.
+     * 
+     * @note The caller is responsible for:
+     *       1. Checking if the returned pointer is not nullptr
+     *       2. Using the data before freeing it
+     *       3. Calling free() on the returned pointer when done
+     * 
+     * @example
+     *   size_t size;
+     *   int16_t* data = decodeBase64Audio(base64String, size);
+     *   if (data != nullptr) {
+     *       // Use the data...
+     *       free(data);  // Must free when done
+     *   }
      */
     int16_t* decodeBase64Audio(const String& base64Data, size_t& decodedSize);
 
