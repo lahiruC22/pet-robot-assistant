@@ -96,6 +96,7 @@ void loop() {
     handleConversationFlow();
     
     yield();  // Allow background tasks to run without introducing latency
+    delay(1); // Add a small delay to prevent excessive CPU usage
 }
 
 void initializeHardware() {
