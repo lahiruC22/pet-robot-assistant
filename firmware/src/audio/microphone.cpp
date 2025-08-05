@@ -1,12 +1,13 @@
 #include "microphone.h"
 #include "../config.h"
-#include <base64.h>
+#include "mbedtls/base64.h"
 
 Microphone::Microphone() : 
     sampleRate(MIC_SAMPLE_RATE),
     bitsPerSample(16),
     bufferLen(256),
     recordingDuration(5),
+    gain(2.0f),  // Default gain factor
     audioBuffer(nullptr),
     tempBuffer(nullptr),
     totalSamples(0),
@@ -27,6 +28,13 @@ bool Microphone::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen
     if (initialized) {
         Serial.println("[MIC] Already initialized");
         return true;
+    }
+
+    // Validate buffer size according to ESP-IDF documentation (max 4092 bytes)
+    size_t dmaBufferSize = bufferLen * sizeof(int16_t);
+    if (dmaBufferSize > 4092) {
+        Serial.printf("[MIC] ERROR: DMA buffer size %d exceeds maximum 4092 bytes\n", dmaBufferSize);
+        return false;
     }
 
     this->sampleRate = sampleRate;
@@ -94,9 +102,23 @@ bool Microphone::startRecording(uint8_t durationSeconds) {
         return false;
     }
 
+    // Validate recording duration (max 60 seconds to prevent excessive PSRAM usage)
+    if (durationSeconds == 0 || durationSeconds > 60) {
+        Serial.printf("[MIC] ERROR: Invalid recording duration %d seconds (must be 1-60)\n", durationSeconds);
+        return false;
+    }
+
     this->recordingDuration = durationSeconds;
     this->totalSamples = sampleRate * recordingDuration;
     this->totalBytes = totalSamples * sizeof(int16_t);
+
+    // Validate total memory requirement
+    size_t psramFree = ESP.getFreePsram();
+    if (totalBytes > psramFree * 0.8) {  // Leave 20% free
+        Serial.printf("[MIC] ERROR: Recording requires %d bytes, but only %d bytes PSRAM available\n", 
+                      totalBytes, psramFree);
+        return false;
+    }
 
     Serial.printf("[MIC] Starting %d second recording...\n", recordingDuration);
     Serial.printf("[MIC] Sample rate: %d Hz\n", sampleRate);
@@ -139,7 +161,45 @@ String Microphone::getBase64AudioData() {
     }
 
     Serial.println("[MIC] Encoding audio data to base64...");
-    String encodedData = base64::encode((uint8_t*)audioBuffer, totalBytes);
+    
+    // Calculate required buffer size for base64 encoding
+    size_t encodedLen = 0;
+    int encodingResult = mbedtls_base64_encode(NULL, 0, &encodedLen, 
+                                      (const unsigned char*)audioBuffer, totalBytes);
+
+    // When called with dlen=0, mbedtls_base64_encode returns MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL
+    // and sets encodedLen to the required buffer size. This is expected behavior.
+    if (encodingResult != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        Serial.println("[MIC] ERROR: Failed to calculate base64 buffer size");
+        return "";
+    }
+
+    if (encodedLen == 0) {
+        Serial.println("[MIC] ERROR: Invalid base64 buffer size calculation");
+        return "";
+    }
+    
+    // Allocate buffer for encoded data
+    char* encodedBuffer = (char*)malloc(encodedLen + 1);
+    if (encodedBuffer == nullptr) {
+        Serial.println("[MIC] ERROR: Failed to allocate encoding buffer");
+        return "";
+    }
+    
+    // Perform base64 encoding
+    size_t actualLen = 0;
+    encodingResult = mbedtls_base64_encode((unsigned char*)encodedBuffer, encodedLen, &actualLen, 
+                                      (const unsigned char*)audioBuffer, totalBytes);
+    
+    if (encodingResult != 0) {
+        Serial.println("[MIC] ERROR: Base64 encoding failed");
+        free(encodedBuffer);
+        return "";
+    }
+    
+    encodedBuffer[actualLen] = '\0';  // Null terminate
+    String encodedData = String(encodedBuffer);
+    free(encodedBuffer);
     
     Serial.printf("[MIC] Base64 encoding complete - Length: %d characters\n", encodedData.length());
     return encodedData;
@@ -190,6 +250,15 @@ void Microphone::stop() {
     if (tempBuffer != nullptr) {
         free(tempBuffer);
         tempBuffer = nullptr;
+    }
+}
+
+void Microphone::setGain(float newGain) {
+    if (newGain >= 0.1f && newGain <= 10.0f) {  // Reasonable range
+        gain = newGain;
+        Serial.printf("[MIC] Gain set to: %.2f\n", gain);
+    } else {
+        Serial.printf("[MIC] WARNING: Invalid gain value %.2f, keeping current value %.2f\n", newGain, gain);
     }
 }
 
@@ -268,9 +337,9 @@ bool Microphone::recordChunk() {
     }
 
     size_t bytesIn = 0;
-    esp_err_t result = i2s_read(I2S_PORT, tempBuffer, bufferLen * sizeof(int16_t), &bytesIn, portMAX_DELAY);
+    esp_err_t err = i2s_read(I2S_PORT, tempBuffer, bufferLen * sizeof(int16_t), &bytesIn, pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS));  // 100ms timeout
     
-    if (result == ESP_OK && bytesIn > 0) {
+    if (err == ESP_OK && bytesIn > 0) {
         size_t samplesToCopy = bytesIn / sizeof(int16_t);
         
         // Make sure we don't exceed our buffer
@@ -278,9 +347,8 @@ bool Microphone::recordChunk() {
             samplesToCopy = totalSamples - samplesRecorded;
         }
         
-        // Copy samples to PSRAM buffer
+        // Copy samples to PSRAM buffer with configurable gain
         // memcpy(&audioBuffer[samplesRecorded], tempBuffer, samplesToCopy * sizeof(int16_t));
-        float gain = 2.0f;  // Adjust this gain value as needed (e.g., 1.0 = no change, 2.0 = +6 dB)
 
         for (size_t i = 0; i < samplesToCopy; ++i) {
             int32_t amplifiedSample = static_cast<int32_t>(tempBuffer[i] * gain);
@@ -310,6 +378,13 @@ bool Microphone::recordChunk() {
             Serial.printf("[MIC] Total bytes recorded: %d\n", samplesRecorded * sizeof(int16_t));
             return false;
         }
+    } else if (err == ESP_ERR_TIMEOUT) {
+        // Timeout is normal during recording, just continue
+        return true;
+    } else {
+        Serial.printf("[MIC] ERROR: I2S read failed: %s\n", esp_err_to_name(err));
+        recording = false;
+        return false;
     }
     
     return true; // Continue recording

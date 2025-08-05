@@ -88,18 +88,25 @@ public:
      */
     void stop();
 
+    /**
+     * @brief Set audio gain factor
+     * @param gain Gain factor (1.0 = no change, 2.0 = +6dB, 0.5 = -6dB)
+     */
+    void setGain(float gain);
+
 private:
     // I2S pin configuration for INMP441
     static const int I2S_WS_PIN = 42;
     static const int I2S_SD_PIN = 41;
     static const int I2S_SCK_PIN = 1;
-    static const i2s_port_t I2S_PORT = I2S_NUM_0;
+    static const i2s_port_t I2S_PORT = I2S_NUM_0;  // Microphone uses port 0
 
     // Recording parameters
     uint32_t sampleRate;
     uint8_t bitsPerSample;
     int bufferLen;
     uint8_t recordingDuration;
+    float gain;  // Audio gain factor
     
     // Audio buffers
     int16_t* audioBuffer;
