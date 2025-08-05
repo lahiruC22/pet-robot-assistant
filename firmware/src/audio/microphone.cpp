@@ -337,7 +337,7 @@ bool Microphone::recordChunk() {
     }
 
     size_t bytesIn = 0;
-    esp_err_t err = i2s_read(I2S_PORT, tempBuffer, bufferLen * sizeof(int16_t), &bytesIn, pdMS_TO_TICKS(100));  // 100ms timeout
+    esp_err_t err = i2s_read(I2S_PORT, tempBuffer, bufferLen * sizeof(int16_t), &bytesIn, pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS));  // 100ms timeout
     
     if (err == ESP_OK && bytesIn > 0) {
         size_t samplesToCopy = bytesIn / sizeof(int16_t);
