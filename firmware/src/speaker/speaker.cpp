@@ -151,7 +151,11 @@ bool Speaker::playRawAudio(const int16_t* audioData, size_t audioSize) {
     freeAudioBuffer();
     audioBuffer = (int16_t*)malloc(audioSize);
     if (audioBuffer == nullptr) {
-        Serial.println("[SPEAKER] ERROR: Failed to allocate audio buffer");
+        #ifdef ESP_PLATFORM
+        Serial.printf("[SPEAKER] ERROR: Failed to allocate audio buffer. Requested size: %u bytes, Free heap: %u bytes\n", (unsigned int)audioSize, (unsigned int)ESP.getFreeHeap());
+        #else
+        Serial.printf("[SPEAKER] ERROR: Failed to allocate audio buffer. Requested size: %u bytes\n", (unsigned int)audioSize);
+        #endif
         return false;
     }
 
@@ -298,7 +302,7 @@ bool Speaker::playbackChunk() {
                                 stereoBuffer, 
                                 bytesToWrite, 
                                 &bytesWritten, 
-                                portMAX_DELAY);
+                                I2S_WRITE_TIMEOUT_TICKS);
     
     if (result == ESP_OK && bytesWritten > 0) {
         size_t stereoSamplesWritten = bytesWritten / sizeof(int16_t);

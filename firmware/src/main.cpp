@@ -95,7 +95,7 @@ void loop() {
     // Main conversation flow state machine
     handleConversationFlow();
     
-    delay(10);  // Small delay to prevent overwhelming the CPU
+    yield();  // Allow background tasks to run without introducing latency
 }
 
 void initializeHardware() {
