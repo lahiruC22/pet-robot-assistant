@@ -302,7 +302,7 @@ bool Speaker::playbackChunk() {
                                 stereoBuffer, 
                                 bytesToWrite, 
                                 &bytesWritten, 
-                                I2S_WRITE_TIMEOUT_TICKS);
+                                portMAX_DELAY);
     
     if (result == ESP_OK && bytesWritten > 0) {
         size_t stereoSamplesWritten = bytesWritten / sizeof(int16_t);
