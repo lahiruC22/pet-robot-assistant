@@ -402,7 +402,11 @@ bool Speaker::allocateStereoBuffer(size_t maxStereoSamples) {
     stereoBufferSize = maxStereoSamples * sizeof(int16_t);
     stereoBuffer = (int16_t*)malloc(stereoBufferSize);
     if (stereoBuffer == nullptr) {
-        Serial.println("Failed to allocate stereo buffer");
+        Serial.print("Failed to allocate stereo buffer. Requested size: ");
+        Serial.print(stereoBufferSize);
+        Serial.print(" bytes. Available memory: ");
+        Serial.print(ESP.getFreeHeap());
+        Serial.println(" bytes.");
         stereoBufferSize = 0;
         return false;
     }
