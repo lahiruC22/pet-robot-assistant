@@ -1,427 +1,553 @@
-#include "speaker.h"
-#include "../config.h"
-#include "mbedtls/base64.h"
+#include <Arduino.h>
+#include <math.h>
+#include <driver/i2s.h>
+#include <mbedtls/base64.h>
+#include <SPIFFS.h>
 
-Speaker::Speaker() : 
-    sampleRate(SPEAKER_SAMPLE_RATE),
-    bitsPerSample(16),
-    bufferLen(1024),
-    volume(0.7f),  // Default to 70% volume
-    audioBuffer(nullptr),
-    audioBufferSize(0),
-    audioSamples(0),
-    playbackPosition(0),
-    stereoBuffer(nullptr),
-    stereoBufferSize(0),
-    initialized(false),
-    playing(false),
-    playbackStartTime(0) {
+#define I2S_DOUT 6  // Data
+#define I2S_BCLK 5   // Bit Clock
+#define I2S_LRC  4   // Left/Right Clock
+
+#define DEFAULT_SAMPLE_RATE 16000  // Changed to match your WAV files
+#define BUFFER_SIZE         256    // Number of samples per buffer
+#define MAX_AUDIO_BUFFER    105000 // Maximum decoded audio buffer size
+#define DEFAULT_VOLUME_GAIN 2.0f   // Default volume gain (2x amplification)
+
+// Current I2S sample rate (can be changed dynamically)
+uint32_t current_sample_rate = DEFAULT_SAMPLE_RATE;
+float volume_gain = DEFAULT_VOLUME_GAIN;
+
+void setupI2S(uint32_t sample_rate = DEFAULT_SAMPLE_RATE) {
+  // Stop I2S if it's already running
+  i2s_driver_uninstall(I2S_NUM_0);
+  
+  // Add delay to ensure proper shutdown
+  delay(100);
+  
+  // Configure I2S peripheral with specified sample rate
+  const i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = sample_rate,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 8,
+    .dma_buf_len = 64,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+
+  const i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_BCLK,
+    .ws_io_num = I2S_LRC,
+    .data_out_num = I2S_DOUT,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  esp_err_t result = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  if (result != ESP_OK) {
+    Serial.print("I2S driver install failed: ");
+    Serial.println(result);
+    return;
+  }
+  
+  result = i2s_set_pin(I2S_NUM_0, &pin_config);
+  if (result != ESP_OK) {
+    Serial.print("I2S pin config failed: ");
+    Serial.println(result);
+    return;
+  }
+  
+  current_sample_rate = sample_rate;
+  Serial.print("✓ I2S successfully configured for sample rate: ");
+  Serial.print(sample_rate);
+  Serial.println(" Hz");
 }
 
-Speaker::~Speaker() {
-    stop();
-    
-    // Properly uninitialize I2S driver if still initialized
-    if (initialized) {
-        i2s_stop(I2S_PORT);
-        i2s_driver_uninstall(I2S_PORT);
-        initialized = false;
-        Serial.println("[SPEAKER] I2S driver uninstalled in destructor");
-    }
-    
-    freeAudioBuffer();
-    freeStereoBuffer();
-}
-
-bool Speaker::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
-    if (initialized) {
-        Serial.println("[SPEAKER] Already initialized");
-        return true;
-    }
-
-    this->sampleRate = sampleRate;
-    this->bitsPerSample = bitsPerSample;
-    this->bufferLen = bufferLen;
-
-    Serial.println("[SPEAKER] Initializing I2S speaker...");
-    Serial.printf("[SPEAKER] Sample rate: %d Hz\n", sampleRate);
-    Serial.printf("[SPEAKER] Bits per sample: %d\n", bitsPerSample);
-    Serial.printf("[SPEAKER] Buffer length: %d\n", bufferLen);
-
-    // Install I2S driver
-    if (!installI2S()) {
-        Serial.println("[SPEAKER] ERROR: Failed to install I2S driver");
-        return false;
-    }
-
-    // Configure pins
-    if (!configurePins()) {
-        Serial.println("[SPEAKER] ERROR: Failed to configure I2S pins");
-        i2s_driver_uninstall(I2S_PORT);
-        return false;
-    }
-
-    // Start I2S
-    esp_err_t err = i2s_start(I2S_PORT);
-    if (err != ESP_OK) {
-        Serial.printf("[SPEAKER] ERROR: Failed to start I2S: %s\n", esp_err_to_name(err));
-        i2s_driver_uninstall(I2S_PORT);
-        return false;
-    }
-
-    // Allocate stereo buffer for mono-to-stereo conversion
-    // Size it for the maximum chunk size (bufferLen samples * 2 for stereo)
-    if (!allocateStereoBuffer(bufferLen * 2)) {
-        Serial.println("[SPEAKER] ERROR: Failed to allocate stereo buffer");
-        i2s_stop(I2S_PORT);
-        i2s_driver_uninstall(I2S_PORT);
-        return false;
-    }
-
-    initialized = true;
-    Serial.println("[SPEAKER] I2S speaker initialized successfully");
+// Base64 decode function
+bool decodeBase64Audio(const char* base64_input, uint8_t* audio_buffer, size_t* audio_length) {
+  size_t input_len = strlen(base64_input);
+  size_t output_len;
+  
+  Serial.print("Input base64 length: ");
+  Serial.println(input_len);
+  
+  // Decode base64 to binary audio data
+  int ret = mbedtls_base64_decode(audio_buffer, MAX_AUDIO_BUFFER, &output_len, 
+                                  (const unsigned char*)base64_input, input_len);
+  
+  if (ret == 0) {
+    *audio_length = output_len;
+    Serial.print("Decoded ");
+    Serial.print(output_len);
+    Serial.println(" bytes of PCM 16-bit audio data");
     return true;
+  } else {
+    Serial.print("Base64 decode failed with error code: ");
+    Serial.println(ret);
+    if (ret == MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+      Serial.println("Output buffer too small for decoded data");
+    }
+    return false;
+  }
 }
 
-bool Speaker::playBase64Audio(const String& base64AudioData) {
-    if (!initialized) {
-        Serial.println("[SPEAKER] ERROR: Speaker not initialized");
-        return false;
-    }
-
-    if (playing) {
-        Serial.println("[SPEAKER] WARNING: Already playing audio, stopping current playback");
-        stop();
-    }
-
-    if (base64AudioData.length() == 0) {
-        Serial.println("[SPEAKER] ERROR: No audio data provided");
-        return false;
-    }
-
-    Serial.printf("[SPEAKER] Decoding base64 audio: %d characters\n", base64AudioData.length());
-
-    // Decode base64 audio data
-    size_t decodedSize = 0;
-    int16_t* decodedAudio = decodeBase64Audio(base64AudioData, decodedSize);
+// Apply volume gain to audio samples with clipping protection
+void applyVolumeGain(int16_t* samples, size_t sample_count, float gain) {
+  for (size_t i = 0; i < sample_count; i++) {
+    int32_t amplified = (int32_t)(samples[i] * gain);
     
-    if (decodedAudio == nullptr || decodedSize == 0) {
-        Serial.println("[SPEAKER] ERROR: Failed to decode base64 audio");
-        return false;
-    }
-
-    // Store audio data for playback
-    freeAudioBuffer();  // Free any existing buffer
-    audioBuffer = decodedAudio;
-    audioBufferSize = decodedSize;
-    audioSamples = decodedSize / sizeof(int16_t);
-    playbackPosition = 0;
-
-    // Apply volume adjustment
-    applyVolume(audioBuffer, audioSamples);
-
-    Serial.printf("[SPEAKER] Audio ready for playback: %d samples, %d bytes\n", audioSamples, audioBufferSize);
-    Serial.printf("[SPEAKER] Duration: %.2f seconds\n", (float)audioSamples / sampleRate);
-
-    // Start playback
-    playing = true;
-    playbackStartTime = millis();
-
-    Serial.println("[SPEAKER] Audio playback started");
-    return true;
-}
-
-bool Speaker::playRawAudio(const int16_t* audioData, size_t audioSize) {
-    if (!initialized) {
-        Serial.println("[SPEAKER] ERROR: Speaker not initialized");
-        return false;
-    }
-
-    if (playing) {
-        Serial.println("[SPEAKER] WARNING: Already playing audio, stopping current playback");
-        stop();
-    }
-
-    if (audioData == nullptr) {
-        Serial.println("[SPEAKER] ERROR: audioData is null");
-        return false;
-    }
-    if (audioSize == 0) {
-        Serial.println("[SPEAKER] ERROR: audioSize is 0");
-        return false;
-    }
-
-    // Allocate and copy audio data
-    freeAudioBuffer();
-    audioBuffer = (int16_t*)malloc(audioSize);
-    if (audioBuffer == nullptr) {
-        #ifdef ESP_PLATFORM
-        Serial.printf("[SPEAKER] ERROR: Failed to allocate audio buffer. Requested size: %u bytes, Free heap: %u bytes\n", (unsigned int)audioSize, (unsigned int)ESP.getFreeHeap());
-        #else
-        Serial.printf("[SPEAKER] ERROR: Failed to allocate audio buffer. Requested size: %u bytes\n", (unsigned int)audioSize);
-        #endif
-        return false;
-    }
-
-    memcpy(audioBuffer, audioData, audioSize);
-    audioBufferSize = audioSize;
-    audioSamples = audioSize / sizeof(int16_t);
-    playbackPosition = 0;
-
-    // Apply volume adjustment
-    applyVolume(audioBuffer, audioSamples);
-
-    Serial.printf("[SPEAKER] Raw audio ready for playback: %d samples, %d bytes\n", audioSamples, audioBufferSize);
-
-    // Start playback
-    playing = true;
-    playbackStartTime = millis();
-
-    Serial.println("[SPEAKER] Raw audio playback started");
-    return true;
-}
-
-bool Speaker::isPlaying() {
-    return playing;
-}
-
-void Speaker::stop() {
-    if (playing) {
-        playing = false;
-        playbackPosition = 0;
-        
-        // Stop I2S transmission without uninstalling driver
-        if (initialized) {
-            i2s_stop(I2S_PORT);
-            i2s_start(I2S_PORT);  // Restart to clear any pending data
-        }
-        
-        Serial.println("[SPEAKER] Audio playback stopped");
-    }
-    // Remove the hardware deinitialization from stop()
-    // Hardware should only be deinitialized in destructor
-}
-
-void Speaker::setVolume(float volume) {
-    this->volume = constrain(volume, 0.0f, 1.0f);
-    Serial.printf("[SPEAKER] Volume set to: %.2f\n", this->volume);
-}
-
-float Speaker::getVolume() {
-    return volume;
-}
-
-void Speaker::loop() {
-    if (playing && initialized) {
-        if (!playbackChunk()) {
-            // Playback completed
-            playing = false;
-            unsigned long playbackDuration = millis() - playbackStartTime;
-            Serial.printf("[SPEAKER] Playback completed in %lu ms\n", playbackDuration);
-        }
-    }
-}
-
-void Speaker::clearBuffer() {
-    if (playing) {
-        stop();
-    }
-    freeAudioBuffer();
-    playbackPosition = 0;
-    Serial.println("[SPEAKER] Audio buffer cleared");
-}
-
-void Speaker::getPlaybackStats(size_t& totalSamples, size_t& currentPosition, uint32_t& sampleRate) {
-    totalSamples = this->audioSamples;
-    currentPosition = this->playbackPosition;
-    sampleRate = this->sampleRate;
-}
-
-bool Speaker::installI2S() {
-    const i2s_config_t i2s_config = {
-        .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_TX),
-        .sample_rate = sampleRate,
-        .bits_per_sample = i2s_bits_per_sample_t(bitsPerSample),
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // Better DAC compatibility
-        .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
-        .intr_alloc_flags = 0,
-        .dma_buf_count = 6,
-        .dma_buf_len = bufferLen,
-        .use_apll = false
-    };
-
-    esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-    if (err != ESP_OK) {
-        Serial.printf("[SPEAKER] ERROR: I2S driver install failed: %s\n", esp_err_to_name(err));
-        return false;
-    }
-
-    return true;
-}
-
-bool Speaker::configurePins() {
-    const i2s_pin_config_t pin_config = {
-        .bck_io_num = I2S_SCK_PIN,
-        .ws_io_num = I2S_WS_PIN,
-        .data_out_num = I2S_SD_PIN,
-        .data_in_num = -1  // Not used for output
-    };
-
-    esp_err_t err = i2s_set_pin(I2S_PORT, &pin_config);
-    if (err != ESP_OK) {
-        Serial.printf("[SPEAKER] ERROR: I2S pin configuration failed: %s\n", esp_err_to_name(err));
-        return false;
-    }
-
-    return true;
-}
-
-bool Speaker::playbackChunk() {
-    if (!playing || audioBuffer == nullptr || playbackPosition >= audioSamples) {
-        return false;  // Playback complete
-    }
-
-    // Calculate how many samples to write in this chunk
-    size_t monoSamplesToWrite = min((size_t)bufferLen, audioSamples - playbackPosition);
-    
-    // Since we're using I2S_CHANNEL_FMT_RIGHT_LEFT, we need to duplicate mono samples to stereo
-    // Use pre-allocated stereo buffer to avoid memory fragmentation
-    size_t stereoSamples = monoSamplesToWrite * 2;
-    
-    // Ensure our pre-allocated buffer is large enough
-    if (stereoBuffer == nullptr || stereoSamples * sizeof(int16_t) > stereoBufferSize) {
-        Serial.println("[SPEAKER] ERROR: Stereo buffer too small or not allocated");
-        return false;
-    }
-    
-    // Duplicate mono samples to stereo (L and R channels get same data)
-    for (size_t i = 0; i < monoSamplesToWrite; i++) {
-        stereoBuffer[i * 2] = audioBuffer[playbackPosition + i];     // Left channel
-        stereoBuffer[i * 2 + 1] = audioBuffer[playbackPosition + i]; // Right channel
-    }
-    
-    size_t bytesToWrite = stereoSamples * sizeof(int16_t);
-    size_t bytesWritten = 0;
-    esp_err_t result = i2s_write(I2S_PORT, 
-                                stereoBuffer, 
-                                bytesToWrite, 
-                                &bytesWritten, 
-                                portMAX_DELAY);
-    
-    if (result == ESP_OK && bytesWritten > 0) {
-        size_t stereoSamplesWritten = bytesWritten / sizeof(int16_t);
-        size_t monoSamplesWritten = stereoSamplesWritten / 2;  // Convert back to mono count
-        playbackPosition += monoSamplesWritten;
-
-        // Progress indicator (every second)
-        if ((playbackPosition % sampleRate) < monoSamplesWritten) {
-            float secondsPlayed = (float)playbackPosition / sampleRate;
-            float totalSeconds = (float)audioSamples / sampleRate;
-            Serial.printf("[SPEAKER] Playing: %.1f/%.1f seconds\n", secondsPlayed, totalSeconds);
-        }
-
-        // Check if playback is complete
-        if (playbackPosition >= audioSamples) {
-            Serial.println("[SPEAKER] Audio playback finished");
-            return false;
-        }
+    // Clip to prevent distortion
+    if (amplified > 32767) {
+      samples[i] = 32767;
+    } else if (amplified < -32768) {
+      samples[i] = -32768;
     } else {
-        Serial.printf("[SPEAKER] ERROR: I2S write failed: %s\n", esp_err_to_name(result));
-        return false;
+      samples[i] = (int16_t)amplified;
     }
-
-    return true;  // Continue playback
+  }
 }
 
-int16_t* Speaker::decodeBase64Audio(const String& base64Data, size_t& decodedSize) {
-    // Calculate required buffer size for base64 decoding
-    size_t requiredLen = 0;
-    int result = mbedtls_base64_decode(NULL, 0, &requiredLen, 
-                                      (const unsigned char*)base64Data.c_str(), base64Data.length());
-    
-    if (result != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        Serial.println("[SPEAKER] ERROR: Invalid base64 data");
-        decodedSize = 0;
-        return nullptr;
-    }
-    
-    // Allocate buffer for decoded data
-    uint8_t* decodedBytes = (uint8_t*)malloc(requiredLen);
-    if (decodedBytes == nullptr) {
-        Serial.println("[SPEAKER] ERROR: Failed to allocate decode buffer");
-        decodedSize = 0;
-        return nullptr;
-    }
-
-    // Perform base64 decoding
-    result = mbedtls_base64_decode(decodedBytes, requiredLen, &decodedSize,
-                                  (const unsigned char*)base64Data.c_str(), base64Data.length());
-    
-    if (result != 0) {
-        Serial.println("[SPEAKER] ERROR: Base64 decode failed");
-        free(decodedBytes);
-        decodedSize = 0;
-        return nullptr;
-    }
-
-    Serial.printf("[SPEAKER] Base64 decode successful: %d bytes\n", decodedSize);
-    
-    // Return as int16_t pointer (PCM audio data)
-    return (int16_t*)decodedBytes;
+// New function to handle mono audio data properly
+void playMonoAudioData(uint8_t* audio_data, size_t length) {
+  // Validate that we have valid PCM 16-bit data
+  if (length < 2) {
+    Serial.println("Error: Audio data too short for 16-bit PCM");
+    return;
+  }
+  
+  int16_t* mono_samples = (int16_t*)audio_data;
+  size_t mono_sample_count = length / 2; // 16-bit samples (2 bytes per sample)
+  
+  Serial.print("Converting ");
+  Serial.print(mono_sample_count);
+  Serial.println(" mono samples to stereo");
+  
+  // Create stereo buffer (double the size)
+  size_t stereo_length = mono_sample_count * 4; // 2 channels * 2 bytes per sample
+  int16_t* stereo_buffer = (int16_t*)malloc(stereo_length);
+  
+  if (stereo_buffer == NULL) {
+    Serial.println("❌ Failed to allocate stereo buffer");
+    return;
+  }
+  
+  // Convert mono to stereo by duplicating each sample
+  for (size_t i = 0; i < mono_sample_count; i++) {
+    stereo_buffer[2 * i] = mono_samples[i];     // Left channel
+    stereo_buffer[2 * i + 1] = mono_samples[i]; // Right channel (duplicate)
+  }
+  
+  // Apply volume gain
+  Serial.print("Applying volume gain: ");
+  Serial.println(volume_gain);
+  applyVolumeGain(stereo_buffer, mono_sample_count * 2, volume_gain);
+  
+  size_t bytes_written;
+  i2s_write(I2S_NUM_0, stereo_buffer, stereo_length, &bytes_written, portMAX_DELAY);
+  
+  Serial.print("Successfully wrote ");
+  Serial.print(bytes_written);
+  Serial.println(" bytes to I2S (stereo converted)");
+  
+  free(stereo_buffer);
 }
 
-void Speaker::applyVolume(int16_t* samples, size_t sampleCount) {
-    if (volume == 1.0f) {
-        return;  // No volume adjustment needed
-    }
-
-    for (size_t i = 0; i < sampleCount; i++) {
-        int32_t adjustedSample = (int32_t)(samples[i] * volume);
-        
-        // Clamp to int16_t range
-        if (adjustedSample > INT16_MAX) {
-            adjustedSample = INT16_MAX;
-        } else if (adjustedSample < INT16_MIN) {
-            adjustedSample = INT16_MIN;
-        }
-        
-        samples[i] = (int16_t)adjustedSample;
-    }
+// Enhanced playAudioData function with better stereo detection
+void playAudioData(uint8_t* audio_data, size_t length) {
+  // Validate that we have valid PCM 16-bit data
+  if (length < 2) {
+    Serial.println("Error: Audio data too short for 16-bit PCM");
+    return;
+  }
+  
+  // Convert to 16-bit samples and play
+  int16_t* samples = (int16_t*)audio_data;
+  size_t sample_count = length / 2; // 16-bit samples (2 bytes per sample)
+  
+  Serial.print("Processing ");
+  Serial.print(sample_count);
+  Serial.println(" 16-bit PCM samples as stereo");
+  
+  // Apply volume gain
+  Serial.print("Applying volume gain: ");
+  Serial.println(volume_gain);
+  applyVolumeGain(samples, sample_count, volume_gain);
+  
+  size_t bytes_written;
+  i2s_write(I2S_NUM_0, samples, length, &bytes_written, portMAX_DELAY);
+  
+  Serial.print("Successfully wrote ");
+  Serial.print(bytes_written);
+  Serial.println(" bytes to I2S");
 }
 
-void Speaker::freeAudioBuffer() {
-    if (audioBuffer != nullptr) {
-        free(audioBuffer);
-        audioBuffer = nullptr;
-        audioBufferSize = 0;
-        audioSamples = 0;
-    }
+// List files in SPIFFS
+void listSPIFFSFiles() {
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  
+  Serial.println("Files in SPIFFS:");
+  while (file) {
+    Serial.print("  ");
+    Serial.print(file.name());
+    Serial.print(" (");
+    Serial.print(file.size());
+    Serial.println(" bytes)");
+    file = root.openNextFile();
+  }
+  Serial.println("End of file list");
 }
 
-bool Speaker::allocateStereoBuffer(size_t maxStereoSamples) {
-    if (stereoBuffer != nullptr) {
-        return true; // Already allocated
+// Enhanced WAV header parsing
+struct WAVHeader {
+  uint32_t sample_rate;
+  uint16_t num_channels;
+  uint16_t bits_per_sample;
+  uint32_t data_size;
+  bool is_valid;
+};
+
+WAVHeader parseWAVHeader(uint8_t* header) {
+  WAVHeader wav = {0};
+  
+  // Check RIFF signature
+  if (header[0] != 'R' || header[1] != 'I' || header[2] != 'F' || header[3] != 'F') {
+    Serial.println("Error: Not a valid RIFF file");
+    wav.is_valid = false;
+    return wav;
+  }
+  
+  // Check WAVE signature
+  if (header[8] != 'W' || header[9] != 'A' || header[10] != 'V' || header[11] != 'E') {
+    Serial.println("Error: Not a valid WAVE file");
+    wav.is_valid = false;
+    return wav;
+  }
+  
+  // Extract audio parameters (little-endian format)
+  wav.sample_rate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
+  wav.num_channels = header[22] | (header[23] << 8);
+  wav.bits_per_sample = header[34] | (header[35] << 8);
+  wav.data_size = header[40] | (header[41] << 8) | (header[42] << 16) | (header[43] << 24);
+  wav.is_valid = true;
+  
+  // Enhanced debug output
+  Serial.println("📊 WAV Header Analysis:");
+  Serial.print("  - Sample Rate: "); Serial.print(wav.sample_rate); Serial.println(" Hz");
+  Serial.print("  - Channels: "); Serial.print(wav.num_channels); 
+  if (wav.num_channels == 1) Serial.println(" (MONO)");
+  else if (wav.num_channels == 2) Serial.println(" (STEREO)");
+  else Serial.println(" (UNKNOWN)");
+  Serial.print("  - Bits per Sample: "); Serial.println(wav.bits_per_sample);
+  Serial.print("  - Data Size: "); Serial.print(wav.data_size); Serial.println(" bytes");
+  
+  // Calculate expected duration
+  uint32_t total_samples = wav.data_size / (wav.bits_per_sample / 8) / wav.num_channels;
+  float duration = (float)total_samples / wav.sample_rate;
+  Serial.print("  - Expected Duration: "); Serial.print(duration); Serial.println(" seconds");
+  
+  return wav;
+}
+
+// Enhanced playAudioFileFromSPIFFS with better sample rate and channel handling
+bool playAudioFileFromSPIFFS(const char* filename) {
+  if (!SPIFFS.exists(filename)) {
+    Serial.print("❌ File not found: ");
+    Serial.println(filename);
+    return false;
+  }
+  
+  File file = SPIFFS.open(filename, "r");
+  if (!file) {
+    Serial.print("❌ Failed to open file: ");
+    Serial.println(filename);
+    return false;
+  }
+  
+  size_t file_size = file.size();
+  Serial.print("\n🎵 Playing file: ");
+  Serial.print(filename);
+  Serial.print(" (");
+  Serial.print(file_size);
+  Serial.println(" bytes)");
+  
+  String filename_str = String(filename);
+  filename_str.toLowerCase();
+  
+  if (filename_str.endsWith(".wav")) {
+    // Handle WAV files - Enhanced sample rate handling
+    Serial.println("🎼 Processing WAV file...");
+    
+    // Read WAV header (44 bytes for standard WAV)
+    uint8_t wav_header[44];
+    if (file.readBytes((char*)wav_header, 44) != 44) {
+      Serial.println("❌ Failed to read WAV header");
+      file.close();
+      return false;
     }
     
-    stereoBufferSize = maxStereoSamples * sizeof(int16_t);
-    stereoBuffer = (int16_t*)malloc(stereoBufferSize);
-    if (stereoBuffer == nullptr) {
-        Serial.print("Failed to allocate stereo buffer. Requested size: ");
-        Serial.print(stereoBufferSize);
-        Serial.print(" bytes. Available memory: ");
-        Serial.print(ESP.getFreeHeap());
-        Serial.println(" bytes.");
-        stereoBufferSize = 0;
-        return false;
+    // Parse WAV header
+    WAVHeader wav_info = parseWAVHeader(wav_header);
+    
+    if (!wav_info.is_valid) {
+      Serial.println("❌ Invalid WAV file format");
+      file.close();
+      return false;
     }
     
+    // ALWAYS reconfigure I2S for the WAV file's sample rate
+    Serial.print("🔧 Configuring I2S for WAV sample rate: ");
+    Serial.print(wav_info.sample_rate);
+    Serial.println(" Hz");
+    setupI2S(wav_info.sample_rate);
+    
+    // Small delay to ensure I2S is ready
+    delay(100);
+    
+    // Validate format
+    if (wav_info.bits_per_sample != 16) {
+      Serial.print("❌ Unsupported bit depth: ");
+      Serial.print(wav_info.bits_per_sample);
+      Serial.println(" (only 16-bit supported)");
+      file.close();
+      return false;
+    }
+    
+    // Get audio data size (file size - header size)
+    size_t audio_data_size = file_size - 44;
+    
+    uint8_t* audio_buffer = (uint8_t*)malloc(audio_data_size);
+    if (audio_buffer == NULL) {
+      Serial.println("❌ Failed to allocate audio buffer for WAV");
+      file.close();
+      return false;
+    }
+    
+    size_t bytes_read = file.readBytes((char*)audio_buffer, audio_data_size);
+    file.close();
+    
+    if (bytes_read != audio_data_size) {
+      Serial.println("❌ Failed to read complete audio data");
+      free(audio_buffer);
+      return false;
+    }
+    
+    Serial.println("🔊 Playing WAV PCM data at correct sample rate");
+    
+    // Handle mono vs stereo properly
+    if (wav_info.num_channels == 1) {
+      Serial.println("📻 Converting mono WAV to stereo for I2S");
+      playMonoAudioData(audio_buffer, audio_data_size);
+    } else if (wav_info.num_channels == 2) {
+      Serial.println("🎵 Playing stereo WAV data");
+      playAudioData(audio_buffer, audio_data_size);
+    } else {
+      Serial.print("❌ Unsupported channel count: ");
+      Serial.println(wav_info.num_channels);
+      free(audio_buffer);
+      return false;
+    }
+    
+    free(audio_buffer);
     return true;
+  } 
+  else if (filename_str.endsWith(".b64")) {
+    // Handle Base64 encoded files
+    Serial.println("Processing Base64 file...");
+    char* base64_buffer = (char*)malloc(file_size + 1);
+    if (base64_buffer == NULL) {
+      Serial.println("Failed to allocate buffer for base64 file");
+      file.close();
+      return false;
+    }
+    
+    file.readBytes(base64_buffer, file_size);
+    base64_buffer[file_size] = '\0';
+    file.close();
+    
+    // Decode and play
+    uint8_t* audio_buffer = (uint8_t*)malloc(MAX_AUDIO_BUFFER);
+    if (audio_buffer == NULL) {
+      Serial.println("Failed to allocate audio buffer");
+      free(base64_buffer);
+      return false;
+    }
+    
+    size_t audio_length;
+    if (decodeBase64Audio(base64_buffer, audio_buffer, &audio_length)) {
+      playAudioData(audio_buffer, audio_length);
+      free(audio_buffer);
+      free(base64_buffer);
+      return true;
+    } else {
+      free(audio_buffer);
+      free(base64_buffer);
+      return false;
+    }
+  } 
+  else {
+    // Handle RAW PCM files (.raw, .pcm, or any other extension)
+    Serial.println("Processing RAW PCM file...");
+    
+    // For raw files, assume they match current I2S sample rate
+    // You might want to reset to default sample rate for raw files
+    if (current_sample_rate != DEFAULT_SAMPLE_RATE) {
+      Serial.print("Resetting I2S to default sample rate: ");
+      Serial.println(DEFAULT_SAMPLE_RATE);
+      setupI2S(DEFAULT_SAMPLE_RATE);
+    }
+    
+    uint8_t* audio_buffer = (uint8_t*)malloc(file_size);
+    if (audio_buffer == NULL) {
+      Serial.println("Failed to allocate audio buffer");
+      file.close();
+      return false;
+    }
+    
+    file.readBytes((char*)audio_buffer, file_size);
+    file.close();
+    
+    Serial.println("Playing raw PCM data from file");
+    playAudioData(audio_buffer, file_size);
+    
+    free(audio_buffer);
+    return true;
+  }
 }
 
-void Speaker::freeStereoBuffer() {
-    if (stereoBuffer != nullptr) {
-        free(stereoBuffer);
-        stereoBuffer = nullptr;
-        stereoBufferSize = 0;
+// Auto-play all audio files in SPIFFS
+void playAllAudioFiles() {
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  
+  Serial.println("Playing all audio files in sequence...");
+  
+  while (file) {
+    String filename = file.name();
+    file = root.openNextFile(); // Get next file before playing current one
+    
+    // Ensure filename starts with "/" for SPIFFS
+    if (!filename.startsWith("/")) {
+      filename = "/" + filename;
     }
+    
+    // Check if it's an audio file
+    if (filename.endsWith(".wav") || filename.endsWith(".b64") || 
+        filename.endsWith(".pcm") || filename.endsWith(".raw")) {
+      
+      Serial.print("Playing: ");
+      Serial.println(filename);
+      
+      playAudioFileFromSPIFFS(filename.c_str());
+      
+      delay(500); // Small pause between files
+    }
+  }
+  
+  Serial.println("Finished playing all audio files");
+}
+
+// Process serial commands
+void processSerialCommand(String command) {
+  command.trim();
+  command.toLowerCase();
+  
+  if (command == "list" || command == "ls") {
+    listSPIFFSFiles();
+  } else if (command.startsWith("play ")) {
+    String filename = command.substring(5);
+    filename.trim();
+    if (filename.length() > 0) {
+      if (!filename.startsWith("/")) {
+        filename = "/" + filename;
+      }
+      playAudioFileFromSPIFFS(filename.c_str());
+    } else {
+      Serial.println("Usage: play <filename>");
+    }
+  } else if (command == "playall") {
+    playAllAudioFiles();
+  } else if (command.startsWith("volume ")) {
+    String volume_str = command.substring(7);
+    volume_str.trim();
+    float new_volume = volume_str.toFloat();
+    if (new_volume > 0 && new_volume <= 10.0) {
+      volume_gain = new_volume;
+      Serial.print("Volume set to: ");
+      Serial.println(volume_gain);
+    } else {
+      Serial.println("Volume must be between 0.1 and 10.0");
+      Serial.print("Current volume: ");
+      Serial.println(volume_gain);
+    }
+  } else if (command == "volume") {
+    Serial.print("Current volume gain: ");
+    Serial.println(volume_gain);
+  } else if (command == "help") {
+    Serial.println("Available commands:");
+    Serial.println("  list or ls - List files in SPIFFS");
+    Serial.println("  play <filename> - Play specific audio file");
+    Serial.println("  playall - Play all audio files in sequence");
+    Serial.println("  volume <gain> - Set volume gain (0.1 to 10.0)");
+    Serial.println("  volume - Show current volume");
+    Serial.println("  help - Show this help");
+  } else {
+    Serial.println("Unknown command. Type 'help' for available commands.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize SPIFFS
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS Mount Failed");
+    return;
+  }
+  
+  setupI2S();
+  
+  Serial.println("ESP32 Audio Player Ready");
+  Serial.println("=========================");
+  Serial.println("Supported file formats:");
+  Serial.println("  .wav - WAV audio files (16-bit PCM)");
+  Serial.println("  .b64 - Base64 encoded PCM audio");
+  Serial.println("  .pcm/.raw - Raw PCM 16-bit audio");
+  Serial.println("");
+  Serial.println("Commands:");
+  Serial.println("  list - List files in SPIFFS");
+  Serial.println("  play <filename> - Play specific audio file");
+  Serial.println("  playall - Play all audio files in sequence");
+  Serial.println("  volume <gain> - Set volume (0.1 to 10.0)");
+  Serial.println("  volume - Show current volume");
+  Serial.println("  help - Show help");
+  Serial.print("Current volume gain: ");
+  Serial.println(volume_gain);
+  Serial.println("=========================");
+  
+  // Show available files
+  listSPIFFSFiles();
+  
+  // Auto-play all audio files on startup
+  Serial.println("");
+  Serial.println("Auto-playing all audio files...");
+  delay(2000); // 2 second delay before starting
+  playAllAudioFiles();
+}
+
+void loop() {
+  // Check if serial data is available for commands only
+  if (Serial.available()) {
+    String incoming = Serial.readStringUntil('\n');
+    incoming.trim();
+    
+    if (incoming.length() > 0) {
+      processSerialCommand(incoming);
+    }
+  }
+  
+  delay(100); // Small delay to prevent excessive CPU usage
 }
