@@ -33,7 +33,7 @@ ElevenLabs -> ESP32: {"type":"agent_response","agent_response_event":{"agent_res
 ## Key Points
 
 - **First Message**: Configured in ElevenLabs web interface, automatically sent after connection
-- **No API Key**: Public agents don't require authentication
+- **Public Agents**: Direct connection to agent endpoint without API keys or signed URLs
 - **Text Focus**: Audio processing is disabled, focusing on text conversations
 - **Interactive**: Type messages in Serial Monitor to chat with the agent
 - **Callbacks**: All events trigger appropriate callback functions in main.cpp

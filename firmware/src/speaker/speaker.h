@@ -3,6 +3,25 @@
 
 #include <driver/i2s.h>
 #include <Arduino.h>
+#include <queue>
+
+// Audio chunk structure for streaming
+struct AudioChunk {
+    int16_t* data;
+    size_t samples;
+    uint32_t eventId;  // For tracking ElevenLabs event order
+    
+    AudioChunk() : data(nullptr), samples(0), eventId(0) {}
+    AudioChunk(int16_t* audioData, size_t sampleCount, uint32_t id = 0) 
+        : data(audioData), samples(sampleCount), eventId(id) {}
+    
+    ~AudioChunk() {
+        if (data) {
+            free(data);
+            data = nullptr;
+        }
+    }
+};
 
 /**
  * @class Speaker
@@ -47,6 +66,48 @@ public:
      * @return true if playback started successfully, false otherwise
      */
     bool playRawAudio(const int16_t* audioData, size_t audioSize);
+
+    /**
+     * @brief Play PCM audio data (convenience method)
+     * @param pcmData Pointer to PCM audio data as uint8_t
+     * @param size Size of audio data in bytes
+     * @return true if playback started successfully, false otherwise
+     */
+    bool playPCMAudio(const uint8_t* pcmData, size_t size);
+
+    /**
+     * @brief Start streaming audio mode for chunked playback
+     * @return true if streaming started successfully, false otherwise
+     */
+    bool startStreamingAudio();
+
+    /**
+     * @brief Add an audio chunk for streaming playback
+     * @param base64AudioData Base64 encoded PCM audio chunk
+     * @param eventId ElevenLabs event ID for ordering
+     * @return true if chunk added successfully, false otherwise
+     */
+    bool addAudioChunk(const String& base64AudioData, uint32_t eventId = 0);
+
+    /**
+     * @brief Add raw audio chunk for streaming playback
+     * @param audioData Pointer to PCM audio samples
+     * @param audioSize Size of audio data in bytes
+     * @param eventId ElevenLabs event ID for ordering
+     * @return true if chunk added successfully, false otherwise
+     */
+    bool addRawAudioChunk(const int16_t* audioData, size_t audioSize, uint32_t eventId = 0);
+
+    /**
+     * @brief Finish streaming mode and play remaining chunks
+     */
+    void finishStreaming();
+
+    /**
+     * @brief Check if in streaming mode
+     * @return true if streaming, false otherwise
+     */
+    bool isStreaming();
 
     /**
      * @brief Check if audio is currently playing
@@ -112,6 +173,12 @@ private:
     // Stereo conversion buffer (pre-allocated to avoid fragmentation)
     int16_t* stereoBuffer;
     size_t stereoBufferSize;
+    
+    // Streaming audio support
+    std::queue<AudioChunk*> audioQueue;
+    bool streamingMode;
+    bool streamingFinished;
+    uint32_t expectedEventId;  // For ensuring proper chunk ordering
     
     // State management
     bool initialized;
@@ -184,6 +251,22 @@ private:
      * @brief Free stereo conversion buffer
      */
     void freeStereoBuffer();
+
+    /**
+     * @brief Clear all queued audio chunks
+     */
+    void clearAudioQueue();
+
+    /**
+     * @brief Start streaming playback from queue
+     */
+    void startStreamingPlayback();
+
+    /**
+     * @brief Process streaming audio queue during playback
+     * @return true if more chunks to play, false if finished
+     */
+    bool processStreamingAudio();
 };
 
 #endif

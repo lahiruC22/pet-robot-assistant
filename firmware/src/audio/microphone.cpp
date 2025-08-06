@@ -2,11 +2,15 @@
 #include "../config.h"
 #include "mbedtls/base64.h"
 
+#ifndef I2S_READ_TIMEOUT_MS
+#define I2S_READ_TIMEOUT_MS 100
+#endif
+
 Microphone::Microphone() : 
     sampleRate(MIC_SAMPLE_RATE),
     bitsPerSample(16),
     bufferLen(256),
-    recordingDuration(5),
+    recordingDuration(3),
     gain(2.0f),  // Default gain factor
     audioBuffer(nullptr),
     tempBuffer(nullptr),

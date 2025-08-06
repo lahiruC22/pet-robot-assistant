@@ -44,9 +44,11 @@ void setupElevenLabsCallbacks();
 // ElevenLabs event handlers
 void onConversationInit(const char* conversation_id);
 void onAgentResponse(const char* response);
-void onAudioData(const String& base64Audio, uint32_t event_id);
+void onAudioData(const uint8_t* pcm_data, size_t size, uint32_t event_id);  // Changed to raw PCM
 void onError(const char* error_message);
 void onTranscript(const char* transcript);
+void onInterruption(uint32_t event_id);  // New interrupt handler
+void handleAudioPlaybackError();
 
 void setup() {
     Serial.begin(115200);
@@ -74,6 +76,7 @@ void setup() {
     Serial.println("  'a' + Enter: Toggle auto conversation mode");
     Serial.println("  's' + Enter: Stop current operation");
     Serial.println("  'v' + Enter: Adjust speaker volume");
+    Serial.println("  't' + Enter: Toggle streaming audio mode");
     Serial.println(String("=").substring(0, 50) + "\n");
     
     changeState(WAITING_FOR_TRIGGER);
@@ -131,13 +134,17 @@ void setupElevenLabsCallbacks() {
     elevenLabsClient.onAudioData(onAudioData);
     elevenLabsClient.onError(onError);
     elevenLabsClient.onTranscript(onTranscript);
+    elevenLabsClient.onInterruption(onInterruption);  // Add interrupt callback
+    
+    // Enable streaming audio for better responsiveness
+    elevenLabsClient.enableStreamingAudio(true);
 }
 
 void initializeElevenLabs() {
     Serial.println("Connecting to ElevenLabs...");
     changeState(CONNECTING);
     
-    // Initialize WebSocket connection
+    // Initialize WebSocket connection for public agent
     elevenLabsClient.begin(ELEVEN_LABS_AGENT_ID);
     
     // Wait for connection with timeout
@@ -197,6 +204,11 @@ void handleSerialInput() {
             speaker.setVolume(newVolume);
             Serial.printf("Speaker volume: %.1f%%\n", newVolume * 100);
         }
+        else if (input == "t") {
+            bool currentMode = elevenLabsClient.isStreamingAudioEnabled();
+            elevenLabsClient.enableStreamingAudio(!currentMode);
+            Serial.println("Streaming audio mode: " + String(!currentMode ? "ON" : "OFF"));
+        }
         else if (input.length() > 0) {
             Serial.println("Unknown command: " + input);
         }
@@ -229,6 +241,7 @@ void handleConversationFlow() {
             break;
             
         case PLAYING_RESPONSE:
+            // Simple audio playback check (like Python SDK)
             if (!speaker.isPlaying()) {
                 Serial.println("Response playback complete!");
                 
@@ -288,13 +301,15 @@ void handleCountdown() {
 }
 
 void processRecordedAudio() {
-    String audioBase64 = microphone.getBase64AudioData();
+    // Get raw PCM audio data from microphone
+    size_t audioSize;
+    int16_t* pcmData = microphone.getRawAudioData(audioSize);
     
-    if (audioBase64.length() > 0) {
-        Serial.printf("Sending audio (%d chars) to ElevenLabs...\n", audioBase64.length());
+    if (pcmData && audioSize > 0) {
+        Serial.printf("Sending audio (%d bytes PCM) to ElevenLabs...\n", audioSize);
         
-        // Send audio to ElevenLabs
-        elevenLabsClient.sendAudio(audioBase64.c_str());
+        // Send raw PCM audio to ElevenLabs (Python SDK style)
+        elevenLabsClient.sendAudio((const uint8_t*)pcmData, audioSize);
         
         // Clear microphone buffer
         microphone.clearBuffer();
@@ -316,29 +331,47 @@ void onAgentResponse(const char* response) {
     Serial.println("AGENT RESPONSE:");
     Serial.println(response);
     Serial.println(String("=").substring(0, 40));
+    
+    // Agent response received - audio chunks will follow immediately
+    Serial.println("Waiting for audio response...");
 }
 
-void onAudioData(const String& base64Audio, uint32_t event_id) {
-    Serial.printf("Received audio response (Event: %u, %d chars)\n", event_id, base64Audio.length());
+void onAudioData(const uint8_t* pcm_data, size_t size, uint32_t event_id) {
+    Serial.printf("Received audio response (Event: %u, %d bytes PCM)\n", event_id, size);
     
-    // Play the audio through speaker
-    if (speaker.playBase64Audio(base64Audio)) {
-        Serial.println("Playing agent response audio...");
+    // In Python SDK style: immediately output audio to speaker (audio_interface.output)
+    // No complex chunking logic needed - just play the PCM data directly
+    if (speaker.isPlaying()) {
+        // If speaker is busy, this could be handled by queuing or interrupting
+        Serial.println("Speaker busy - implementing proper audio interface...");
+    }
+    
+    // Convert PCM data to format expected by speaker and play immediately
+    // This mimics the Python SDK's audio_interface.output(audio) behavior
+    if (speaker.playPCMAudio(pcm_data, size)) {
+        Serial.printf("Playing PCM audio chunk (Event: %u)\n", event_id);
         changeState(PLAYING_RESPONSE);
     } else {
-        Serial.println("Failed to start audio playback!");
-        if (autoMode) {
-            // Continue conversation even if audio fails
-            delay(2000);
-            startRecordingSequence();
-        } else {
-            changeState(WAITING_FOR_TRIGGER);
-        }
+        Serial.println("Failed to play PCM audio chunk!");
+        handleAudioPlaybackError();
     }
 }
 
 void onTranscript(const char* transcript) {
     Serial.println("User transcript: " + String(transcript));
+}
+
+void onInterruption(uint32_t event_id) {
+    Serial.printf("Conversation interrupted (Event ID: %u) - stopping audio playback\n", event_id);
+    
+    // Immediately stop audio playback (like Python SDK's audio_interface.interrupt())
+    speaker.stop();
+    
+    // Clear any audio buffers/queues
+    speaker.clearBuffer();
+    
+    // Return to waiting for trigger state
+    changeState(WAITING_FOR_TRIGGER);
 }
 
 void onError(const char* error_message) {
@@ -348,6 +381,18 @@ void onError(const char* error_message) {
     if (currentState == WAITING_FOR_RESPONSE) {
         Serial.println("Attempting to recover...");
         delay(2000);
+        changeState(WAITING_FOR_TRIGGER);
+    }
+}
+
+void handleAudioPlaybackError() {
+    if (autoMode) {
+        // Continue conversation even if audio fails
+        Serial.println("Audio failed in auto mode, continuing conversation...");
+        delay(2000);
+        startRecordingSequence();
+    } else {
+        Serial.println("Audio failed, returning to trigger wait");
         changeState(WAITING_FOR_TRIGGER);
     }
 }

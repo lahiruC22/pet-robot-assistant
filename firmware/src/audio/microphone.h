@@ -37,7 +37,7 @@ public:
      * @param durationSeconds Duration to record in seconds
      * @return true if recording started successfully, false otherwise
      */
-    bool startRecording(uint8_t durationSeconds = 5);
+    bool startRecording(uint8_t durationSeconds = 3);
 
     /**
      * @brief Main loop function to handle recording process
