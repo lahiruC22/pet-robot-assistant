@@ -5,11 +5,11 @@ This implementation provides a complete WebSocket client for the ElevenLabs Conv
 ## Features
 
 ### Core WebSocket Functionality
-- ✅ WebSocket connection to `wss://api.elevenlabs.io/v1/convai/conversation`
+- ✅ WebSocket connection to `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=YOUR_AGENT_ID`
+- ✅ Public agent support (no API key or signed URL required)
 - ✅ Automatic reconnection with configurable intervals
 - ✅ Heartbeat/ping-pong mechanism for connection health
 - ✅ SSL/TLS support for secure connections
-- ✅ Authentication via API key in Authorization header
 
 ### Message Types Supported
 
@@ -73,7 +73,7 @@ void setup() {
     });
     
     // Start connection
-    elevenLabs.begin("your_api_key", "your_agent_id");
+    elevenLabs.begin("your_agent_id");
 }
 
 void loop() {
@@ -89,7 +89,7 @@ void loop() {
 ## API Methods
 
 ### Connection Management
-- `begin(api_key, agent_id)` - Initialize and connect
+- `begin(agent_id)` - Initialize and connect to public agent
 - `loop()` - Process WebSocket events (call in main loop)
 - `disconnect()` - Close connection
 - `isConnected()` - Check connection status
@@ -135,14 +135,16 @@ Required libraries (included in platformio.ini):
 
 ## Notes
 
-1. **Audio Override**: The client automatically sets `override_agent_output_audio: true` to prevent default audio handling, allowing custom audio processing.
+1. **Public Agents**: This implementation is designed for public agents that don't require API keys or signed URLs. The connection is made directly to the agent endpoint.
 
-2. **Automatic Pong**: The client automatically responds to ping messages to maintain connection health.
+2. **Audio Override**: The client automatically sets `override_agent_output_audio: true` to prevent default audio handling, allowing custom audio processing.
 
-3. **Error Recovery**: The WebSocket library handles automatic reconnection on network failures.
+3. **Automatic Pong**: The client automatically responds to ping messages to maintain connection health.
 
-4. **Tool Handling**: Implement your tool logic in the `onToolCall` callback and respond with `sendToolResult()`.
+4. **Error Recovery**: The WebSocket library handles automatic reconnection on network failures.
 
-5. **Voice Activity Detection**: Use VAD scores to detect when the user is speaking and optimize audio processing.
+5. **Tool Handling**: Implement your tool logic in the `onToolCall` callback and respond with `sendToolResult()`.
+
+6. **Voice Activity Detection**: Use VAD scores to detect when the user is speaking and optimize audio processing.
 
 This implementation provides a complete, production-ready WebSocket client for the ElevenLabs Conversational AI API with comprehensive error handling and all documented message types supported.

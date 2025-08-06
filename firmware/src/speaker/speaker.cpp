@@ -1,6 +1,7 @@
 #include "speaker.h"
 #include "../config.h"
 #include "mbedtls/base64.h"
+#include <queue>
 
 Speaker::Speaker() : 
     sampleRate(SPEAKER_SAMPLE_RATE),
@@ -13,6 +14,9 @@ Speaker::Speaker() :
     playbackPosition(0),
     stereoBuffer(nullptr),
     stereoBufferSize(0),
+    streamingMode(false),
+    streamingFinished(false),
+    expectedEventId(1),
     initialized(false),
     playing(false),
     playbackStartTime(0) {
@@ -31,6 +35,7 @@ Speaker::~Speaker() {
     
     freeAudioBuffer();
     freeStereoBuffer();
+    clearAudioQueue();
 }
 
 bool Speaker::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
@@ -86,6 +91,11 @@ bool Speaker::begin(uint32_t sampleRate, uint8_t bitsPerSample, int bufferLen) {
 bool Speaker::playBase64Audio(const String& base64AudioData) {
     if (!initialized) {
         Serial.println("[SPEAKER] ERROR: Speaker not initialized");
+        return false;
+    }
+
+    if (streamingMode) {
+        Serial.println("[SPEAKER] WARNING: In streaming mode, use addAudioChunk instead");
         return false;
     }
 
@@ -181,6 +191,124 @@ bool Speaker::playRawAudio(const int16_t* audioData, size_t audioSize) {
     return true;
 }
 
+bool Speaker::playPCMAudio(const uint8_t* pcmData, size_t size) {
+    // Convert uint8_t pointer to int16_t pointer and call playRawAudio
+    return playRawAudio((const int16_t*)pcmData, size);
+}
+
+bool Speaker::startStreamingAudio() {
+    if (!initialized) {
+        Serial.println("[SPEAKER] ERROR: Speaker not initialized");
+        return false;
+    }
+    
+    if (playing) {
+        Serial.println("[SPEAKER] WARNING: Already playing audio, stopping current playback");
+        stop();
+    }
+    
+    // Clear any existing queue
+    clearAudioQueue();
+    
+    streamingMode = true;
+    streamingFinished = false;
+    expectedEventId = 1;
+    
+    Serial.println("[SPEAKER] Started streaming audio mode");
+    return true;
+}
+
+bool Speaker::addAudioChunk(const String& base64AudioData, uint32_t eventId) {
+    if (!streamingMode) {
+        Serial.println("[SPEAKER] ERROR: Not in streaming mode, call startStreamingAudio() first");
+        return false;
+    }
+    
+    if (base64AudioData.length() == 0) {
+        Serial.println("[SPEAKER] WARNING: Empty audio chunk received");
+        return true; // Not an error, just skip
+    }
+    
+    // Decode the base64 audio chunk
+    size_t decodedSize = 0;
+    int16_t* decodedAudio = decodeBase64Audio(base64AudioData, decodedSize);
+    
+    if (decodedAudio == nullptr || decodedSize == 0) {
+        Serial.println("[SPEAKER] ERROR: Failed to decode audio chunk");
+        return false;
+    }
+    
+    size_t samples = decodedSize / sizeof(int16_t);
+    
+    // Apply volume adjustment
+    applyVolume(decodedAudio, samples);
+    
+    // Create audio chunk and add to queue
+    AudioChunk* chunk = new AudioChunk(decodedAudio, samples, eventId);
+    audioQueue.push(chunk);
+    
+    Serial.printf("[SPEAKER] Added audio chunk: %d samples, event ID: %u, queue size: %d\n", 
+                  samples, eventId, audioQueue.size());
+    
+    // Start playback if not already playing and we have chunks
+    if (!playing && !audioQueue.empty()) {
+        startStreamingPlayback();
+    }
+    
+    return true;
+}
+
+bool Speaker::addRawAudioChunk(const int16_t* audioData, size_t audioSize, uint32_t eventId) {
+    if (!streamingMode) {
+        Serial.println("[SPEAKER] ERROR: Not in streaming mode, call startStreamingAudio() first");
+        return false;
+    }
+    
+    if (audioData == nullptr || audioSize == 0) {
+        Serial.println("[SPEAKER] WARNING: Empty audio chunk received");
+        return true;
+    }
+    
+    size_t samples = audioSize / sizeof(int16_t);
+    
+    // Allocate and copy audio data
+    int16_t* chunkData = (int16_t*)malloc(audioSize);
+    if (chunkData == nullptr) {
+        Serial.printf("[SPEAKER] ERROR: Failed to allocate memory for audio chunk: %d bytes\n", audioSize);
+        return false;
+    }
+    
+    memcpy(chunkData, audioData, audioSize);
+    
+    // Apply volume adjustment
+    applyVolume(chunkData, samples);
+    
+    // Create audio chunk and add to queue
+    AudioChunk* chunk = new AudioChunk(chunkData, samples, eventId);
+    audioQueue.push(chunk);
+    
+    Serial.printf("[SPEAKER] Added raw audio chunk: %d samples, event ID: %u, queue size: %d\n", 
+                  samples, eventId, audioQueue.size());
+    
+    // Start playback if not already playing and we have chunks
+    if (!playing && !audioQueue.empty()) {
+        startStreamingPlayback();
+    }
+    
+    return true;
+}
+
+void Speaker::finishStreaming() {
+    if (streamingMode) {
+        streamingFinished = true;
+        Serial.printf("[SPEAKER] Streaming finished, %d chunks remaining in queue\n", audioQueue.size());
+    }
+}
+
+bool Speaker::isStreaming() {
+    return streamingMode;
+}
+
 bool Speaker::isPlaying() {
     return playing;
 }
@@ -198,6 +326,15 @@ void Speaker::stop() {
         
         Serial.println("[SPEAKER] Audio playback stopped");
     }
+    
+    // Exit streaming mode and clear queue
+    if (streamingMode) {
+        streamingMode = false;
+        streamingFinished = false;
+        clearAudioQueue();
+        Serial.println("[SPEAKER] Exited streaming mode");
+    }
+    
     // Remove the hardware deinitialization from stop()
     // Hardware should only be deinitialized in destructor
 }
@@ -213,11 +350,25 @@ float Speaker::getVolume() {
 
 void Speaker::loop() {
     if (playing && initialized) {
-        if (!playbackChunk()) {
-            // Playback completed
-            playing = false;
-            unsigned long playbackDuration = millis() - playbackStartTime;
-            Serial.printf("[SPEAKER] Playback completed in %lu ms\n", playbackDuration);
+        if (streamingMode) {
+            // Handle streaming audio playback
+            if (!processStreamingAudio()) {
+                // Streaming playback completed
+                playing = false;
+                streamingMode = false;
+                streamingFinished = false;
+                clearAudioQueue();
+                unsigned long playbackDuration = millis() - playbackStartTime;
+                Serial.printf("[SPEAKER] Streaming playback completed in %lu ms\n", playbackDuration);
+            }
+        } else {
+            // Handle regular audio playback
+            if (!playbackChunk()) {
+                // Playback completed
+                playing = false;
+                unsigned long playbackDuration = millis() - playbackStartTime;
+                Serial.printf("[SPEAKER] Playback completed in %lu ms\n", playbackDuration);
+            }
         }
     }
 }
@@ -227,8 +378,9 @@ void Speaker::clearBuffer() {
         stop();
     }
     freeAudioBuffer();
+    clearAudioQueue();
     playbackPosition = 0;
-    Serial.println("[SPEAKER] Audio buffer cleared");
+    Serial.println("[SPEAKER] Audio buffer and queue cleared");
 }
 
 void Speaker::getPlaybackStats(size_t& totalSamples, size_t& currentPosition, uint32_t& sampleRate) {
@@ -424,4 +576,63 @@ void Speaker::freeStereoBuffer() {
         stereoBuffer = nullptr;
         stereoBufferSize = 0;
     }
+}
+
+void Speaker::clearAudioQueue() {
+    while (!audioQueue.empty()) {
+        AudioChunk* chunk = audioQueue.front();
+        audioQueue.pop();
+        delete chunk;
+    }
+}
+
+void Speaker::startStreamingPlayback() {
+    if (audioQueue.empty()) {
+        Serial.println("[SPEAKER] WARNING: No audio chunks to play");
+        return;
+    }
+    
+    playing = true;
+    playbackStartTime = millis();
+    Serial.println("[SPEAKER] Started streaming playback");
+}
+
+bool Speaker::processStreamingAudio() {
+    // If current chunk is finished, move to next chunk
+    if (audioBuffer == nullptr || playbackPosition >= audioSamples) {
+        // Free current chunk
+        freeAudioBuffer();
+        
+        // Get next chunk from queue
+        if (!audioQueue.empty()) {
+            AudioChunk* chunk = audioQueue.front();
+            audioQueue.pop();
+            
+            // Set up for playback
+            audioBuffer = chunk->data;
+            audioSamples = chunk->samples;
+            audioBufferSize = chunk->samples * sizeof(int16_t);
+            playbackPosition = 0;
+            
+            Serial.printf("[SPEAKER] Playing chunk: %d samples, event ID: %u, %d chunks remaining\n", 
+                          chunk->samples, chunk->eventId, audioQueue.size());
+            
+            // Don't delete chunk data as we're using it, just delete the container
+            chunk->data = nullptr; // Prevent destructor from freeing the data
+            delete chunk;
+        } else if (streamingFinished) {
+            // No more chunks and streaming is finished
+            return false;
+        } else {
+            // No chunks available but streaming not finished, keep waiting
+            return true;
+        }
+    }
+    
+    // Play current chunk
+    if (audioBuffer != nullptr && playbackPosition < audioSamples) {
+        return playbackChunk();
+    }
+    
+    return true;
 }

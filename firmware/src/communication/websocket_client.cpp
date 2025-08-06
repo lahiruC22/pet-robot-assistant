@@ -1,6 +1,10 @@
 #include "websocket_client.h"
 #include "../config.h"
 
+// Speaker audio configuration
+// #define SPEAKER_BYTES_PER_SAMPLE 2  // 16-bit PCM audio = 2 bytes per sample
+// #define SPEAKER_SAMPLE_RATE 16000   // Set your speaker sample rate (e.g., 16000 Hz)
+
 // ElevenLabs WebSocket server certificate (root CA)
 const char* elevenlabs_ca_cert = \
 "-----BEGIN CERTIFICATE-----\n" \
@@ -41,10 +45,12 @@ ElevenLabsClient* ElevenLabsClient::instance = nullptr;
 ElevenLabsClient::ElevenLabsClient() : 
     connected(false),
     overrideAudio(true),
+    streamingAudioEnabled(true),
     lastReconnectAttempt(0),
     reconnectInterval(5000),
     reconnectAttempts(0),
     shouldReconnect(false),
+    lastInterruptId(0),  // Initialize interrupt tracking
     audioCallback(nullptr),
     transcriptCallback(nullptr),
     agentResponseCallback(nullptr),
@@ -53,7 +59,8 @@ ElevenLabsClient::ElevenLabsClient() :
     errorCallback(nullptr),
     vadScoreCallback(nullptr),
     pingCallback(nullptr),
-    conversationEndCallback(nullptr) {
+    conversationEndCallback(nullptr),
+    interruptionCallback(nullptr) {
     instance = this;
 }
 
@@ -72,8 +79,11 @@ void ElevenLabsClient::begin(const char* agent_id) {
     wifiClientSecure.setCACert(elevenlabs_ca_cert);
     wifiClientSecure.setTimeout(10000);
     
-    // Configure WebSocket with SSL client
-    webSocket.beginSSL("api.elevenlabs.io", 443, "/v1/convai/conversation?agent_id=" + agentId, "", "https");
+    // Direct connection to public agent endpoint
+    String wsUrl = "/v1/convai/conversation?agent_id=" + agentId;
+    Serial.println("Connecting to: api.elevenlabs.io" + wsUrl);
+    webSocket.beginSSL("api.elevenlabs.io", 443, wsUrl.c_str(), "", "https");
+    
     webSocket.onEvent(webSocketEvent);
     
     // Configure heartbeat - more conservative settings to prevent disconnections
@@ -126,13 +136,16 @@ void ElevenLabsClient::reconnect() {
         
         // Reconfigure SSL and reconnect
         wifiClientSecure.setCACert(elevenlabs_ca_cert);
-        webSocket.beginSSL("api.elevenlabs.io", 443, "/v1/convai/conversation?agent_id=" + agentId, "", "https");
+        
+        // Direct connection to public agent endpoint
+        String wsUrl = "/v1/convai/conversation?agent_id=" + agentId;
+        webSocket.beginSSL("api.elevenlabs.io", 443, wsUrl.c_str(), "", "https");
     } else {
         Serial.println("Cannot reconnect: WiFi not connected or agent ID missing");
     }
 }
 
-void ElevenLabsClient::sendAudio(const char* base64AudioData) {
+void ElevenLabsClient::sendAudio(const uint8_t* pcm_data, size_t size) {
     if (!connected) {
         handleError("Cannot send audio: WebSocket not connected");
         return;
@@ -143,24 +156,53 @@ void ElevenLabsClient::sendAudio(const char* base64AudioData) {
         return;
     }
     
-    if (!base64AudioData || strlen(base64AudioData) == 0) {
+    if (!pcm_data || size == 0) {
         handleError("Cannot send audio: No audio data provided");
         return;
     }
     
-    JsonDocument doc;
-    doc["type"] = "user_audio";
-    doc["audio_base_64"] = base64AudioData;
+    // CRITICAL FIX: Split large audio into smaller chunks
+    // ElevenLabs Python SDK sends ~250ms chunks (4000 samples = 8000 bytes at 16kHz)
+    const size_t MAX_CHUNK_SIZE = 8000; // 250ms at 16kHz (like Python SDK)
     
-    String message;
-    serializeJson(doc, message);
+    size_t offset = 0;
+    int chunkCount = 0;
     
-    bool success = webSocket.sendTXT(message);
-    if (success) {
-        Serial.printf("Sent audio message: %d characters base64 data\n", strlen(base64AudioData));
-    } else {
-        handleError("Failed to send audio message");
+    while (offset < size) {
+        size_t chunkSize = min(MAX_CHUNK_SIZE, size - offset);
+        
+        // Encode this chunk to base64
+        String base64Audio = base64Encode(pcm_data + offset, chunkSize);
+        
+        // Validate base64 string is not empty
+        if (base64Audio.length() == 0) {
+            handleError("Cannot send audio: Base64 encoding failed for chunk");
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["user_audio_chunk"] = base64Audio;
+        
+        String message;
+        serializeJson(doc, message);
+        
+        bool success = webSocket.sendTXT(message);
+        if (success) {
+            chunkCount++;
+            Serial.printf("Sent audio chunk %d: %d bytes PCM -> %d chars base64\n", 
+                         chunkCount, chunkSize, base64Audio.length());
+        } else {
+            handleError("Failed to send audio chunk");
+            return;
+        }
+        
+        offset += chunkSize;
+        
+        // Small delay between chunks to avoid overwhelming the server
+        delay(10);
     }
+    
+    Serial.printf("Audio transmission complete: %d total chunks\n", chunkCount);
 }
 
 void ElevenLabsClient::sendText(const char* text) {
@@ -252,6 +294,7 @@ void ElevenLabsClient::sendPong(uint32_t event_id) {
     serializeJson(doc, message);
     
     webSocket.sendTXT(message);
+    Serial.printf("Sent pong for event ID: %u\n", event_id);
 }
 
 void ElevenLabsClient::sendInitialConnectionMessage() {
@@ -383,28 +426,41 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
         }
     }
     else if (type == "audio") {
-        // Handle audio response - enhanced for speaker integration
+        // Handle audio response - exact Python SDK implementation
         if (doc["audio_event"].is<JsonObject>()) {
             uint32_t event_id = doc["audio_event"]["event_id"].as<uint32_t>();
+            
+            // Critical: Check for interruption like Python SDK
+            if (event_id <= lastInterruptId) {
+                Serial.printf("[AUDIO] Skipping audio chunk (Event ID: %u <= Last Interrupt: %u)\n", 
+                              event_id, lastInterruptId);
+                return;  // Skip this audio chunk
+            }
             
             // Check if audio_base_64 field exists
             if (doc["audio_event"]["audio_base_64"].is<String>()) {
                 String audioBase64 = doc["audio_event"]["audio_base_64"].as<String>();
                 
-                Serial.printf("\n[AUDIO] Received audio response (Event ID: %u)\n", event_id);
-                Serial.printf("[AUDIO] Base64 audio length: %d characters\n", audioBase64.length());
-                Serial.printf("[AUDIO] Estimated audio duration: %.2f seconds\n", 
-                            // Estimated duration calculation assumes 16-bit PCM audio (2 bytes per sample).
-                            // If using a different format, update SPEAKER_BYTES_PER_SAMPLE accordingly.
-                            (audioBase64.length() * 3.0 / 4.0) / (SPEAKER_SAMPLE_RATE * SPEAKER_BYTES_PER_SAMPLE));
+                Serial.printf("[AUDIO] Processing audio chunk (Event ID: %u, %d chars)\n", 
+                              event_id, audioBase64.length());
                 
-                // Output base64 for logging/debugging
-                Serial.println("[AUDIO_BASE64] " + audioBase64);
+                // Decode base64 to PCM audio (like Python SDK)
+                size_t decodedSize = (audioBase64.length() * 3) / 4;  // Estimate decoded size
+                uint8_t* pcmData = new uint8_t[decodedSize];
+                size_t actualSize = base64Decode(audioBase64.c_str(), pcmData, decodedSize);
                 
-                // Call audio callback with base64 data for speaker
-                if (audioCallback) {
-                    audioCallback(audioBase64, event_id);
+                if (actualSize > 0) {
+                    Serial.printf("[AUDIO] Decoded %d bytes PCM audio\n", actualSize);
+                    
+                    // Call audio callback with raw PCM data (like Python SDK audio_interface.output)
+                    if (audioCallback) {
+                        audioCallback(pcmData, actualSize, event_id);
+                    }
+                } else {
+                    Serial.println("[AUDIO] Failed to decode base64 audio");
                 }
+                
+                delete[] pcmData;
             } else {
                 Serial.printf("[AUDIO] Received audio event (Event ID: %u) but no audio data found\n", event_id);
             }
@@ -465,6 +521,19 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
             Serial.println("Tentative agent response: " + tentative_response);
         }
     }
+    else if (type == "interruption") {
+        // Handle interruption - exact Python SDK implementation
+        if (doc["interruption_event"].is<JsonObject>()) {
+            uint32_t event_id = doc["interruption_event"]["event_id"].as<uint32_t>();
+            lastInterruptId = event_id;  // Update last interrupt ID
+            
+            Serial.printf("[INTERRUPTION] Conversation interrupted (Event ID: %u)\n", event_id);
+            
+            if (interruptionCallback) {
+                interruptionCallback(event_id);
+            }
+        }
+    }
     else if (type == "agent_response_correction") {
         // Handle agent response correction
         if (doc["agent_response_correction_event"].is<JsonObject>()) {
@@ -478,8 +547,17 @@ void ElevenLabsClient::processMessage(const JsonDocument& doc) {
         }
     }
     else if (type == "interruption") {
-        // Handle interruption
-        Serial.println("Conversation interrupted");
+        // Handle interruption - exact Python SDK implementation
+        if (doc["interruption_event"].is<JsonObject>()) {
+            uint32_t event_id = doc["interruption_event"]["event_id"].as<uint32_t>();
+            lastInterruptId = event_id;  // Update last interrupt ID
+            
+            Serial.printf("[INTERRUPTION] Conversation interrupted (Event ID: %u)\n", event_id);
+            
+            if (interruptionCallback) {
+                interruptionCallback(event_id);
+            }
+        }
     }
     else {
         Serial.println("Unknown message type: " + type);
@@ -555,7 +633,117 @@ void ElevenLabsClient::onConversationEnd(ConversationEndCallback callback) {
     conversationEndCallback = callback;
 }
 
+void ElevenLabsClient::onInterruption(InterruptionCallback callback) {
+    interruptionCallback = callback;
+}
+
 // Configuration methods
 void ElevenLabsClient::setOverrideAudio(bool override) {
     overrideAudio = override;
+}
+
+void ElevenLabsClient::enableStreamingAudio(bool enable) {
+    streamingAudioEnabled = enable;
+    Serial.printf("[WS_CLIENT] Streaming audio %s\n", enable ? "enabled" : "disabled");
+}
+
+bool ElevenLabsClient::isStreamingAudioEnabled() {
+    return streamingAudioEnabled;
+}
+
+// Real-time streaming methods (like Python SDK input_callback)
+void ElevenLabsClient::startRealtimeStreaming() {
+    if (!connected) {
+        Serial.println("[REALTIME] Cannot start streaming: WebSocket not connected");
+        return;
+    }
+    
+    streamingAudioEnabled = true;
+    Serial.println("[REALTIME] Started real-time audio streaming");
+}
+
+void ElevenLabsClient::stopRealtimeStreaming() {
+    streamingAudioEnabled = false;
+    Serial.println("[REALTIME] Stopped real-time audio streaming");
+}
+
+bool ElevenLabsClient::isRealtimeStreaming() {
+    return streamingAudioEnabled && connected;
+}
+
+void ElevenLabsClient::sendRealtimeAudioChunk(const uint8_t* pcm_data, size_t size) {
+    if (!streamingAudioEnabled || !connected) {
+        return;
+    }
+    
+    if (!pcm_data || size == 0) {
+        return;
+    }
+    
+    // Encode PCM data to base64 (like Python SDK)
+    String base64Audio = base64Encode(pcm_data, size);
+    if (base64Audio.length() == 0) {
+        return;
+    }
+    
+    // Send as real-time chunk (same format as batch)
+    JsonDocument doc;
+    doc["user_audio_chunk"] = base64Audio;
+    
+    String message;
+    serializeJson(doc, message);
+    
+    webSocket.sendTXT(message);
+}
+
+// Utility Functions
+String ElevenLabsClient::base64Encode(const uint8_t* data, size_t length) {
+    if (!data || length == 0) {
+        return "";  // Return empty string for invalid input
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    String encoded = "";
+    encoded.reserve((length * 4 / 3) + 4);  // Pre-allocate memory for efficiency
+    
+    for (size_t i = 0; i < length; i += 3) {
+        uint32_t b = (data[i] << 16);
+        if (i + 1 < length) b |= (data[i + 1] << 8);
+        if (i + 2 < length) b |= data[i + 2];
+        
+        encoded += base64_chars[(b >> 18) & 0x3F];
+        encoded += base64_chars[(b >> 12) & 0x3F];
+        encoded += (i + 1 < length) ? base64_chars[(b >> 6) & 0x3F] : '=';
+        encoded += (i + 2 < length) ? base64_chars[b & 0x3F] : '=';
+    }
+    
+    return encoded;
+}
+
+size_t ElevenLabsClient::base64Decode(const char* base64_string, uint8_t* output_buffer, size_t max_output_size) {
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t input_len = strlen(base64_string);
+    size_t output_len = 0;
+    
+    if (input_len % 4 != 0) return 0;
+    
+    for (size_t i = 0; i < input_len && output_len < max_output_size; i += 4) {
+        uint32_t b = 0;
+        
+        for (int j = 0; j < 4; j++) {
+            char c = base64_string[i + j];
+            if (c == '=') break;
+            
+            char* pos = strchr((char*)base64_chars, c);
+            if (!pos) return 0;
+            
+            b = (b << 6) | (pos - base64_chars);
+        }
+        
+        if (output_len < max_output_size) output_buffer[output_len++] = (b >> 16) & 0xFF;
+        if (output_len < max_output_size && base64_string[i + 2] != '=') output_buffer[output_len++] = (b >> 8) & 0xFF;
+        if (output_len < max_output_size && base64_string[i + 3] != '=') output_buffer[output_len++] = b & 0xFF;
+    }
+    
+    return output_len;
 }

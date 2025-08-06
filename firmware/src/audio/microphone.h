@@ -4,6 +4,9 @@
 #include <driver/i2s.h>
 #include <Arduino.h>
 
+// Real-time audio callback type (like Python SDK input_callback)
+typedef void (*RealtimeAudioCallback)(const int16_t* audioData, size_t samples);
+
 /**
  * @class Microphone
  * @brief Manages I2S microphone recording functionality for INMP441 microphone.
@@ -37,7 +40,7 @@ public:
      * @param durationSeconds Duration to record in seconds
      * @return true if recording started successfully, false otherwise
      */
-    bool startRecording(uint8_t durationSeconds = 5);
+    bool startRecording(uint8_t durationSeconds = 3);
 
     /**
      * @brief Main loop function to handle recording process
@@ -94,6 +97,30 @@ public:
      */
     void setGain(float gain);
 
+    // Real-time streaming methods (like Python SDK input_callback)
+    /**
+     * @brief Start real-time audio streaming with 250ms chunks
+     * @param callback Function to call when audio chunk is ready
+     * @return true if streaming started successfully
+     */
+    bool startRealtimeStreaming(RealtimeAudioCallback callback);
+
+    /**
+     * @brief Stop real-time audio streaming
+     */
+    void stopRealtimeStreaming();
+
+    /**
+     * @brief Check if real-time streaming is active
+     * @return true if streaming is active
+     */
+    bool isRealtimeStreaming();
+
+    /**
+     * @brief Real-time loop - call continuously for streaming
+     */
+    void realtimeLoop();
+
 private:
     // I2S pin configuration for INMP441
     static const int I2S_WS_PIN = 42;
@@ -114,6 +141,13 @@ private:
     size_t totalSamples;
     size_t totalBytes;
     size_t samplesRecorded;
+    
+    // Real-time streaming (like Python SDK)
+    bool realtimeStreaming;
+    RealtimeAudioCallback realtimeCallback;
+    int16_t* realtimeBuffer;
+    size_t realtimeChunkSize;  // 250ms worth of samples
+    size_t realtimeBufferIndex;
     
     // State management
     bool initialized;
