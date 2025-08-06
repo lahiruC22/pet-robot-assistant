@@ -161,22 +161,48 @@ void ElevenLabsClient::sendAudio(const uint8_t* pcm_data, size_t size) {
         return;
     }
     
-    // Encode PCM data to base64 (like Python SDK)
-    String base64Audio = base64Encode(pcm_data, size);
+    // CRITICAL FIX: Split large audio into smaller chunks
+    // ElevenLabs Python SDK sends ~250ms chunks (4000 samples = 8000 bytes at 16kHz)
+    const size_t MAX_CHUNK_SIZE = 8000; // 250ms at 16kHz (like Python SDK)
     
-    JsonDocument doc;
-    // Use correct Python SDK format: "user_audio_chunk" not "type" + "user_audio"
-    doc["user_audio_chunk"] = base64Audio;
+    size_t offset = 0;
+    int chunkCount = 0;
     
-    String message;
-    serializeJson(doc, message);
-    
-    bool success = webSocket.sendTXT(message);
-    if (success) {
-        Serial.printf("Sent audio chunk: %d bytes PCM -> %d chars base64\n", size, base64Audio.length());
-    } else {
-        handleError("Failed to send audio chunk");
+    while (offset < size) {
+        size_t chunkSize = min(MAX_CHUNK_SIZE, size - offset);
+        
+        // Encode this chunk to base64
+        String base64Audio = base64Encode(pcm_data + offset, chunkSize);
+        
+        // Validate base64 string is not empty
+        if (base64Audio.length() == 0) {
+            handleError("Cannot send audio: Base64 encoding failed for chunk");
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["user_audio_chunk"] = base64Audio;
+        
+        String message;
+        serializeJson(doc, message);
+        
+        bool success = webSocket.sendTXT(message);
+        if (success) {
+            chunkCount++;
+            Serial.printf("Sent audio chunk %d: %d bytes PCM -> %d chars base64\n", 
+                         chunkCount, chunkSize, base64Audio.length());
+        } else {
+            handleError("Failed to send audio chunk");
+            return;
+        }
+        
+        offset += chunkSize;
+        
+        // Small delay between chunks to avoid overwhelming the server
+        delay(10);
     }
+    
+    Serial.printf("Audio transmission complete: %d total chunks\n", chunkCount);
 }
 
 void ElevenLabsClient::sendText(const char* text) {
@@ -627,8 +653,13 @@ bool ElevenLabsClient::isStreamingAudioEnabled() {
 
 // Utility Functions
 String ElevenLabsClient::base64Encode(const uint8_t* data, size_t length) {
+    if (!data || length == 0) {
+        return "";  // Return empty string for invalid input
+    }
+    
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     String encoded = "";
+    encoded.reserve((length * 4 / 3) + 4);  // Pre-allocate memory for efficiency
     
     for (size_t i = 0; i < length; i += 3) {
         uint32_t b = (data[i] << 16);

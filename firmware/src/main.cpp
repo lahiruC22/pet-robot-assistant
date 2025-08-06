@@ -306,6 +306,15 @@ void processRecordedAudio() {
     int16_t* pcmData = microphone.getRawAudioData(audioSize);
     
     if (pcmData && audioSize > 0) {
+        // Additional validation: ensure we have meaningful audio data
+        // Check for minimum audio size (at least 1 sample = 2 bytes for 16-bit)
+        if (audioSize < 2) {
+            Serial.println("Audio data too small, skipping...");
+            microphone.clearBuffer();
+            changeState(WAITING_FOR_TRIGGER);
+            return;
+        }
+        
         Serial.printf("Sending audio (%d bytes PCM) to ElevenLabs...\n", audioSize);
         
         // Send raw PCM audio to ElevenLabs (Python SDK style)

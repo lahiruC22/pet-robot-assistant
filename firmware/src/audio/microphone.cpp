@@ -215,7 +215,16 @@ int16_t* Microphone::getRawAudioData(size_t& dataSize) {
         return nullptr;
     }
     
-    dataSize = totalBytes;
+    // Return actual recorded bytes, not planned totalBytes
+    dataSize = samplesRecorded * sizeof(int16_t);
+    
+    // Additional safety check - ensure we have meaningful audio data
+    if (dataSize == 0 || samplesRecorded == 0) {
+        Serial.println("[MIC] WARNING: No samples were recorded");
+        dataSize = 0;
+        return nullptr;
+    }
+    
     return audioBuffer;
 }
 
