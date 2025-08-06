@@ -29,6 +29,7 @@ ConversationState currentState = IDLE;
 unsigned long stateTimer = 0;
 int countdownSeconds = 0;
 bool autoMode = false;  // Manual trigger vs auto conversation mode
+bool realtimeMode = false;  // Real-time streaming vs batch recording
 
 // Function declarations
 void initializeHardware();
@@ -49,6 +50,9 @@ void onError(const char* error_message);
 void onTranscript(const char* transcript);
 void onInterruption(uint32_t event_id);  // New interrupt handler
 void handleAudioPlaybackError();
+
+// Real-time streaming callback (like Python SDK input_callback)
+void onRealtimeAudioChunk(const int16_t* audioData, size_t samples);
 
 void setup() {
     Serial.begin(115200);
@@ -77,6 +81,7 @@ void setup() {
     Serial.println("  's' + Enter: Stop current operation");
     Serial.println("  'v' + Enter: Adjust speaker volume");
     Serial.println("  't' + Enter: Toggle streaming audio mode");
+    Serial.println("  'realtime' + Enter: Toggle real-time streaming mode");
     Serial.println(String("=").substring(0, 50) + "\n");
     
     changeState(WAITING_FOR_TRIGGER);
@@ -91,6 +96,11 @@ void loop() {
     // Handle audio systems
     microphone.loop();
     speaker.loop();
+    
+    // Handle real-time streaming if enabled
+    if (realtimeMode && microphone.isRealtimeStreaming()) {
+        microphone.realtimeLoop();
+    }
     
     // Handle serial commands
     handleSerialInput();
@@ -175,6 +185,27 @@ void handleSerialInput() {
         input.trim();
         input.toLowerCase();
         
+        // If in real-time mode, only allow stopping or volume changes
+        if (realtimeMode) {
+            if (input == "realtime" || input == "s") {
+                Serial.println("[REALTIME] Stopping real-time mode...");
+                realtimeMode = false;
+                microphone.stopRealtimeStreaming();
+                elevenLabsClient.stopRealtimeStreaming();
+                changeState(WAITING_FOR_TRIGGER);
+                Serial.println("[REALTIME] ✓ Stopped - back to manual mode");
+            } else if (input == "v") {
+                float currentVolume = speaker.getVolume();
+                float newVolume = (currentVolume >= 1.0f) ? 0.3f : currentVolume + 0.2f;
+                speaker.setVolume(newVolume);
+                Serial.printf("Speaker volume: %.1f%%\n", newVolume * 100);
+            } else if (input.length() > 0) {
+                Serial.println("[REALTIME] In real-time mode. Use 'realtime' or 's' to stop.");
+            }
+            return; // Don't process other commands while in real-time mode
+        }
+        
+        // Normal command processing when not in real-time mode
         if (input == "r") {
             if (currentState == WAITING_FOR_TRIGGER) {
                 Serial.println("Starting recording sequence...");
@@ -208,6 +239,25 @@ void handleSerialInput() {
             bool currentMode = elevenLabsClient.isStreamingAudioEnabled();
             elevenLabsClient.enableStreamingAudio(!currentMode);
             Serial.println("Streaming audio mode: " + String(!currentMode ? "ON" : "OFF"));
+        }
+        else if (input == "realtime") {
+            realtimeMode = true;
+            Serial.println("\n[REALTIME] Mode: ENABLED");
+            
+            if (currentState == WAITING_FOR_TRIGGER) {
+                Serial.println("[REALTIME] Starting real-time conversation mode...");
+                elevenLabsClient.startRealtimeStreaming();
+                if (microphone.startRealtimeStreaming(onRealtimeAudioChunk)) {
+                    Serial.println("[REALTIME] ✓ Active - speak continuously for real-time conversation!");
+                    Serial.println("[REALTIME] Audio will be sent in 250ms chunks");
+                } else {
+                    Serial.println("[REALTIME] ✗ Failed to start streaming");
+                    realtimeMode = false;
+                }
+            } else {
+                Serial.println("[REALTIME] ✗ Cannot start - not in waiting state");
+                realtimeMode = false;
+            }
         }
         else if (input.length() > 0) {
             Serial.println("Unknown command: " + input);
@@ -243,9 +293,14 @@ void handleConversationFlow() {
         case PLAYING_RESPONSE:
             // Simple audio playback check (like Python SDK)
             if (!speaker.isPlaying()) {
-                Serial.println("Response playback complete!");
+                Serial.println("[RESPONSE] ✓ Response playback complete!");
                 
-                if (autoMode) {
+                if (realtimeMode) {
+                    // In real-time mode, just continue streaming - no state changes
+                    Serial.println("[REALTIME] Continuing real-time conversation...");
+                    // Stay in PLAYING_RESPONSE or go back to a listening state
+                    // But don't restart recording sequences
+                } else if (autoMode) {
                     Serial.println("Auto mode: Starting next recording cycle...");
                     delay(1000);  // Brief pause before next recording
                     startRecordingSequence();
@@ -336,42 +391,42 @@ void onConversationInit(const char* conversation_id) {
 }
 
 void onAgentResponse(const char* response) {
-    Serial.println("\n" + String("=").substring(0, 40));
-    Serial.println("AGENT RESPONSE:");
+    Serial.println("\n" + String("=").substring(0, 50));
+    Serial.println("[AGENT RESPONSE] Text received:");
     Serial.println(response);
-    Serial.println(String("=").substring(0, 40));
+    Serial.println(String("=").substring(0, 50));
     
     // Agent response received - audio chunks will follow immediately
-    Serial.println("Waiting for audio response...");
+    Serial.println("[AGENT RESPONSE] Waiting for audio chunks...");
 }
 
 void onAudioData(const uint8_t* pcm_data, size_t size, uint32_t event_id) {
-    Serial.printf("Received audio response (Event: %u, %d bytes PCM)\n", event_id, size);
+    Serial.printf("[RESPONSE] Received audio chunk (Event: %u, %d bytes PCM)\n", event_id, size);
     
     // In Python SDK style: immediately output audio to speaker (audio_interface.output)
     // No complex chunking logic needed - just play the PCM data directly
     if (speaker.isPlaying()) {
         // If speaker is busy, this could be handled by queuing or interrupting
-        Serial.println("Speaker busy - implementing proper audio interface...");
+        Serial.println("[RESPONSE] Speaker busy - implementing proper audio interface...");
     }
     
     // Convert PCM data to format expected by speaker and play immediately
     // This mimics the Python SDK's audio_interface.output(audio) behavior
     if (speaker.playPCMAudio(pcm_data, size)) {
-        Serial.printf("Playing PCM audio chunk (Event: %u)\n", event_id);
+        Serial.printf("[RESPONSE] ✓ Playing audio chunk (Event: %u, %d bytes)\n", event_id, size);
         changeState(PLAYING_RESPONSE);
     } else {
-        Serial.println("Failed to play PCM audio chunk!");
+        Serial.println("[RESPONSE] ✗ Failed to play PCM audio chunk!");
         handleAudioPlaybackError();
     }
 }
 
 void onTranscript(const char* transcript) {
-    Serial.println("User transcript: " + String(transcript));
+    Serial.println("[TRANSCRIPT] User: " + String(transcript));
 }
 
 void onInterruption(uint32_t event_id) {
-    Serial.printf("Conversation interrupted (Event ID: %u) - stopping audio playback\n", event_id);
+    Serial.printf("[INTERRUPT] Conversation interrupted (Event ID: %u) - stopping audio playback\n", event_id);
     
     // Immediately stop audio playback (like Python SDK's audio_interface.interrupt())
     speaker.stop();
@@ -384,11 +439,11 @@ void onInterruption(uint32_t event_id) {
 }
 
 void onError(const char* error_message) {
-    Serial.println("ElevenLabs Error: " + String(error_message));
+    Serial.println("[ERROR] ElevenLabs Error: " + String(error_message));
     
     // Attempt to recover from errors
     if (currentState == WAITING_FOR_RESPONSE) {
-        Serial.println("Attempting to recover...");
+        Serial.println("[ERROR] Attempting to recover...");
         delay(2000);
         changeState(WAITING_FOR_TRIGGER);
     }
@@ -404,4 +459,21 @@ void handleAudioPlaybackError() {
         Serial.println("Audio failed, returning to trigger wait");
         changeState(WAITING_FOR_TRIGGER);
     }
+}
+
+// Real-time streaming callback (like Python SDK input_callback)
+void onRealtimeAudioChunk(const int16_t* audioData, size_t samples) {
+    if (!realtimeMode || !elevenLabsClient.isConnected()) {
+        return;
+    }
+    
+    // Convert samples to bytes for transmission
+    size_t audioSize = samples * sizeof(int16_t);
+    const uint8_t* pcmBytes = reinterpret_cast<const uint8_t*>(audioData);
+    
+    // Send real-time audio chunk (like Python SDK input_callback)
+    elevenLabsClient.sendRealtimeAudioChunk(pcmBytes, audioSize);
+    
+    // Debug output for real-time streaming
+    Serial.printf("[REALTIME] Sent chunk: %d samples (%d bytes) to ElevenLabs\n", samples, audioSize);
 }

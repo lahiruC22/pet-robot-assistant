@@ -17,6 +17,11 @@ Microphone::Microphone() :
     totalSamples(0),
     totalBytes(0),
     samplesRecorded(0),
+    realtimeStreaming(false),
+    realtimeCallback(nullptr),
+    realtimeBuffer(nullptr),
+    realtimeChunkSize(0),
+    realtimeBufferIndex(0),
     initialized(false),
     recording(false),
     recordingComplete(false),
@@ -401,4 +406,91 @@ bool Microphone::recordChunk() {
     }
     
     return true; // Continue recording
+}
+
+// Real-time streaming implementation (like Python SDK input_callback)
+bool Microphone::startRealtimeStreaming(RealtimeAudioCallback callback) {
+    if (!initialized) {
+        Serial.println("[MIC] Cannot start real-time streaming: not initialized");
+        return false;
+    }
+    
+    if (recording) {
+        Serial.println("[MIC] Cannot start real-time streaming: batch recording active");
+        return false;
+    }
+    
+    if (!callback) {
+        Serial.println("[MIC] Cannot start real-time streaming: no callback provided");
+        return false;
+    }
+    
+    // Calculate 250ms chunk size (like Python SDK INPUT_FRAMES_PER_BUFFER=4000)
+    realtimeChunkSize = (sampleRate * 250) / 1000;  // 250ms at current sample rate
+    
+    // Allocate real-time buffer
+    realtimeBuffer = (int16_t*)ps_malloc(realtimeChunkSize * sizeof(int16_t));
+    if (!realtimeBuffer) {
+        Serial.println("[MIC] Failed to allocate real-time buffer");
+        return false;
+    }
+    
+    realtimeCallback = callback;
+    realtimeBufferIndex = 0;
+    realtimeStreaming = true;
+    
+    Serial.printf("[MIC] Started real-time streaming (250ms = %d samples)\n", realtimeChunkSize);
+    return true;
+}
+
+void Microphone::stopRealtimeStreaming() {
+    if (!realtimeStreaming) {
+        return;
+    }
+    
+    realtimeStreaming = false;
+    realtimeCallback = nullptr;
+    
+    if (realtimeBuffer) {
+        free(realtimeBuffer);
+        realtimeBuffer = nullptr;
+    }
+    
+    realtimeBufferIndex = 0;
+    Serial.println("[MIC] Stopped real-time streaming");
+}
+
+bool Microphone::isRealtimeStreaming() {
+    return realtimeStreaming && initialized;
+}
+
+void Microphone::realtimeLoop() {
+    if (!realtimeStreaming || !initialized || !realtimeCallback) {
+        return;
+    }
+    
+    // Read audio data
+    size_t bytesIn = 0;
+    esp_err_t err = i2s_read(I2S_PORT, tempBuffer, bufferLen * sizeof(int16_t), &bytesIn, pdMS_TO_TICKS(10));
+    
+    if (err == ESP_OK && bytesIn > 0) {
+        size_t samplesRead = bytesIn / sizeof(int16_t);
+        
+        for (size_t i = 0; i < samplesRead && realtimeBufferIndex < realtimeChunkSize; i++) {
+            // Apply gain
+            int32_t amplifiedSample = static_cast<int32_t>(tempBuffer[i] * gain);
+            if (amplifiedSample > INT16_MAX) amplifiedSample = INT16_MAX;
+            if (amplifiedSample < INT16_MIN) amplifiedSample = INT16_MIN;
+            
+            realtimeBuffer[realtimeBufferIndex++] = static_cast<int16_t>(amplifiedSample);
+            
+            // Check if chunk is complete
+            if (realtimeBufferIndex >= realtimeChunkSize) {
+                // Send 250ms chunk (like Python SDK)
+                realtimeCallback(realtimeBuffer, realtimeChunkSize);
+                realtimeBufferIndex = 0;
+                return; // Process next chunk in next call
+            }
+        }
+    }
 }

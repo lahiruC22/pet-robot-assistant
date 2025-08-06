@@ -58,6 +58,12 @@ public:
     void enableStreamingAudio(bool enable);
     bool isStreamingAudioEnabled();
 
+    // Real-time streaming methods (like Python SDK input_callback)
+    void startRealtimeStreaming();
+    void stopRealtimeStreaming();
+    bool isRealtimeStreaming();
+    void sendRealtimeAudioChunk(const uint8_t* pcm_data, size_t size);
+
 private:
     WebSocketsClient webSocket;
     WiFiClientSecure wifiClientSecure;

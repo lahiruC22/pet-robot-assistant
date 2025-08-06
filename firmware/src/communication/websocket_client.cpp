@@ -651,6 +651,51 @@ bool ElevenLabsClient::isStreamingAudioEnabled() {
     return streamingAudioEnabled;
 }
 
+// Real-time streaming methods (like Python SDK input_callback)
+void ElevenLabsClient::startRealtimeStreaming() {
+    if (!connected) {
+        Serial.println("[REALTIME] Cannot start streaming: WebSocket not connected");
+        return;
+    }
+    
+    streamingAudioEnabled = true;
+    Serial.println("[REALTIME] Started real-time audio streaming");
+}
+
+void ElevenLabsClient::stopRealtimeStreaming() {
+    streamingAudioEnabled = false;
+    Serial.println("[REALTIME] Stopped real-time audio streaming");
+}
+
+bool ElevenLabsClient::isRealtimeStreaming() {
+    return streamingAudioEnabled && connected;
+}
+
+void ElevenLabsClient::sendRealtimeAudioChunk(const uint8_t* pcm_data, size_t size) {
+    if (!streamingAudioEnabled || !connected) {
+        return;
+    }
+    
+    if (!pcm_data || size == 0) {
+        return;
+    }
+    
+    // Encode PCM data to base64 (like Python SDK)
+    String base64Audio = base64Encode(pcm_data, size);
+    if (base64Audio.length() == 0) {
+        return;
+    }
+    
+    // Send as real-time chunk (same format as batch)
+    JsonDocument doc;
+    doc["user_audio_chunk"] = base64Audio;
+    
+    String message;
+    serializeJson(doc, message);
+    
+    webSocket.sendTXT(message);
+}
+
 // Utility Functions
 String ElevenLabsClient::base64Encode(const uint8_t* data, size_t length) {
     if (!data || length == 0) {
